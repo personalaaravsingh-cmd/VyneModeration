@@ -1,0 +1,17 @@
+{
+  "1550534284928880673": {
+    "logChannelId": "1550534286216798294",
+    "modRoleId": null,
+    "automod": {
+      "enabled": true,
+      "antiSpam": true,
+      "antiLinks": true,
+      "antiInvites": true,
+      "antiMentionSpam": true,
+      "maxMentions": 2,
+      "spamMessages": 6,
+      "spamWindow": 7000,
+      "warnThreshold": 3
+    }
+  }
+}
