@@ -100,7 +100,7 @@ function write(file, data) {
 }
 
 // ============================================================
-// HELPERS
+// EMBEDS / HELPERS
 // ============================================================
 
 function success(title, description) {
@@ -198,7 +198,6 @@ const defaultConfig = {
 
   automod: {
     enabled: true,
-
     antiSpam: true,
     antiLinks: false,
     antiInvites: true,
@@ -212,6 +211,7 @@ const defaultConfig = {
     spamMessages: 6,
     spamWindow: 7000,
     maxMentions: 5,
+    warnThreshold: 3,
 
     timeoutDuration: 60000,
 
@@ -488,10 +488,8 @@ async function hostingRequest(endpoint, options = {}) {
       headers: {
         Authorization:
           `Bearer ${BOT_HOSTING_API_KEY}`,
-
         "Content-Type":
           "application/json",
-
         ...(options.headers || {})
       }
     }
@@ -922,5 +920,4 @@ const commands = [
         )
         .addStringOption(o =>
           o.setName("prize")
-            .setDescription("Prize")
-           
+            .setDesc
