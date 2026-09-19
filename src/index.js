@@ -2021,4 +2021,23 @@ const commands = [
                       null,
                       2
                     ),
+return interaction.editReply({
+    embeds: [
+        success(
+            "Restart Requested",
+            `Vyne restart requested.
+
+\`\`\`json
+${truncate(
+    JSON.stringify(
+        result,
+        null,
+        2
+    ),
+    1500
+)}\`\`\``
+        )
+    ]
+});
+}
           
