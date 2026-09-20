@@ -11,29 +11,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract replacement
+      - name: Extract fixed Vyne index
         run: |
           mkdir -p /tmp/vyne
-          unzip -o src/Vyne_index_REPLACEMENT.zip -d /tmp/vyne
+          unzip -o src/Vyne_index_REPLACEMENT_FIXED.zip -d /tmp/vyne
 
           JS_FILE=$(find /tmp/vyne -type f -name "*.js" | head -n 1)
 
           if [ -z "$JS_FILE" ]; then
-            echo "No JavaScript file found in ZIP"
+            echo "ERROR: No JavaScript file found inside ZIP."
             exit 1
           fi
 
+          echo "Using JavaScript file: $JS_FILE"
           cp "$JS_FILE" src/index.js
-          rm -f src/Vyne_index_REPLACEMENT.zip
+
+          rm -f src/Vyne_index_REPLACEMENT_FIXED.zip
 
       - name: Commit replacement
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -A
-          git commit -m "Replace Vyne index.js" || exit 0
+          git add src/index.js
+          git add -u
+
+          git commit -m "Fix Vyne reminder handling" || exit 0
           git push
