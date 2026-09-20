@@ -134,13 +134,51 @@ function writeJSON(file, data) {
   }
 }
 
+function normalizeReminderStore(raw) {
+  const out = {};
+
+  // Older Vyne versions stored reminders as one flat array.
+  // Convert that format into the current guild -> reminder[] structure.
+  if (Array.isArray(raw)) {
+    for (const reminder of raw) {
+      if (!reminder || typeof reminder !== "object") continue;
+      const guildId = reminder.guildId || "_legacy";
+      if (!Array.isArray(out[guildId])) out[guildId] = [];
+      out[guildId].push(reminder);
+    }
+    return out;
+  }
+
+  if (!raw || typeof raw !== "object") return out;
+
+  for (const [guildId, value] of Object.entries(raw)) {
+    if (Array.isArray(value)) {
+      out[guildId] = value.filter((r) => r && typeof r === "object");
+      continue;
+    }
+
+    if (value && typeof value === "object") {
+      // Also tolerate a single reminder stored directly under a guild ID.
+      if (value.at !== undefined || value.channelId || value.message || value.userId) {
+        out[guildId] = [value];
+        continue;
+      }
+
+      // Or tolerate an object keyed by reminder IDs.
+      out[guildId] = Object.values(value).filter((r) => r && typeof r === "object");
+    }
+  }
+
+  return out;
+}
+
 const db = {
   config: readJSON(FILES.config, {}),
   warnings: readJSON(FILES.warnings, {}),
   cases: readJSON(FILES.cases, {}),
   levels: readJSON(FILES.levels, {}),
   economy: readJSON(FILES.economy, {}),
-  reminders: readJSON(FILES.reminders, {}),
+  reminders: normalizeReminderStore(readJSON(FILES.reminders, {})),
   giveaways: readJSON(FILES.giveaways, {}),
   tickets: readJSON(FILES.tickets, {}),
   ai: readJSON(FILES.ai, {}),
@@ -2711,7 +2749,7 @@ async function handleInteraction(interaction) {
     }
 
     if(command==="announce"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const ch=interaction.options.getChannel("channel")||interaction.channel;await ch.send({embeds:[embed(`📢 ${interaction.options.getString("title")}`,interaction.options.getString("message"),COLORS.primary)]});return safeReply(interaction,{embeds:[success("Announcement sent",`Posted in ${ch}.`)],flags:MessageFlags.Ephemeral});}
-    if(command==="remind"){const d=parseDuration(interaction.options.getString("time"));if(!d)return safeReply(interaction,{embeds:[errorEmbed("Invalid time","Use `10m`, `2h`, `1d`, etc.")],flags:MessageFlags.Ephemeral});const at=Date.now()+d;if(!db.reminders[interaction.guildId])db.reminders[interaction.guildId]=[];db.reminders[interaction.guildId].push({userId:interaction.user.id,channelId:interaction.channelId,message:interaction.options.getString("message"),at});writeJSON(FILES.reminders,db.reminders);return safeReply(interaction,{embeds:[success("Reminder created",`I'll remind you <t:${Math.floor(at/1000)}:R>.`)]});}
+    if(command==="remind"){const d=parseDuration(interaction.options.getString("time"));if(!d)return safeReply(interaction,{embeds:[errorEmbed("Invalid time","Use `10m`, `2h`, `1d`, etc.")],flags:MessageFlags.Ephemeral});const at=Date.now()+d;if(!db.reminders[interaction.guildId])db.reminders[interaction.guildId]=[];db.reminders[interaction.guildId].push({guildId:interaction.guildId,userId:interaction.user.id,channelId:interaction.channelId,message:interaction.options.getString("message"),at});writeJSON(FILES.reminders,db.reminders);return safeReply(interaction,{embeds:[success("Reminder created",`I'll remind you <t:${Math.floor(at/1000)}:R>.`)]});}
 
     if(command==="notify"){
       if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
