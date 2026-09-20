@@ -516,7 +516,7 @@ async function askVyneAI({ guildId, userId, username, prompt, channelName }) {
     system_instruction: systemInstruction,
     generation_config: {
       temperature: 0.7,
-      max_tokens: 900
+      max_output_tokens: 900
     }
   };
 
