@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const {
   Client,
   GatewayIntentBits,
@@ -8,25 +9,40 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   EmbedBuilder,
-  MessageFlags,
-  ChannelType,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  ChannelType,
+  MessageFlags
 } = require("discord.js");
+
 const fs = require("fs");
 const path = require("path");
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
-const BOT_HOSTING_API_KEY = process.env.BOT_HOSTING_API_KEY;
-const VYNE_OWNER_ID = process.env.VYNE_OWNER_ID;
-const BOT_HOSTING_API = "https://bot-hosting.net/api/v1";
-if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
+
+// ============================================================
+// ENVIRONMENT
+// ============================================================
+
+const {
+  DISCORD_TOKEN,
+  CLIENT_ID,
+  GUILD_ID,
+  BOT_HOSTING_API_KEY,
+  VYNE_OWNER_ID
+} = process.env;
+
+if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error("❌ Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID.");
   process.exit(1);
 }
+
+const HOSTING_API = "https://bot-hosting.net/api/v1";
+
+// ============================================================
+// CLIENT
+// ============================================================
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -35,73 +51,404 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates
   ],
-  partials: [Partials.Message, Partials.Channel]
+  partials: [
+    Partials.Channel,
+    Partials.Message
+  ]
 });
-const dataDir = path.join(__dirname, "..", "data");
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+
+// ============================================================
+// STORAGE
+// ============================================================
+
+const DATA_DIR = path.join(__dirname, "..", "data");
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-const DB = {
-  config: path.join(dataDir, "config.json"),
-  warnings: path.join(dataDir, "warnings.json"),
-  cases: path.join(dataDir, "cases.json"),
-  levels: path.join(dataDir, "levels.json"),
-  economy: path.join(dataDir, "economy.json"),
-  reminders: path.join(dataDir, "reminders.json"),
-  giveaways: path.join(dataDir, "giveaways.json"),
-  tickets: path.join(dataDir, "tickets.json")
+
+const files = {
+  config: path.join(DATA_DIR, "config.json"),
+  warnings: path.join(DATA_DIR, "warnings.json"),
+  cases: path.join(DATA_DIR, "cases.json"),
+  levels: path.join(DATA_DIR, "levels.json"),
+  economy: path.join(DATA_DIR, "economy.json"),
+  reminders: path.join(DATA_DIR, "reminders.json"),
+  giveaways: path.join(DATA_DIR, "giveaways.json")
 };
-for (const file of Object.values(DB)) {
-  if (!fs.existsSync(file)) fs.writeFileSync(file, "{}");
+
+for (const file of Object.values(files)) {
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, "{}");
+  }
 }
-function read(file) {
+
+function load(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return {};
   }
 }
-function write(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+
+function save(file, data) {
+  fs.writeFileSync(
+    file,
+    JSON.stringify(data, null, 2)
+  );
 }
-function success(title, description) {
+
+// ============================================================
+// VYNE THEME
+// ============================================================
+
+const COLORS = {
+  primary: 0x7c5cff,
+  success: 0x57f287,
+  danger: 0xed4245,
+  warning: 0xfee75c,
+  info: 0x5865f2,
+  dark: 0x18191c
+};
+
+const BRAND = "Vyne";
+
+function embed(title, description = "", color = COLORS.primary) {
   return new EmbedBuilder()
-    .setColor(0x57f287)
-    .setTitle(`✅ ${title}`)
-    .setDescription(description)
-    .setTimestamp();
-}
-function errorEmbed(description) {
-  return new EmbedBuilder()
-    .setColor(0xed4245)
-    .setTitle("❌ Error")
-    .setDescription(description)
-    .setTimestamp();
-}
-function info(title, description) {
-  return new EmbedBuilder()
-    .setColor(0x5865f2)
+    .setColor(color)
+    .setAuthor({
+      name: BRAND
+    })
     .setTitle(title)
     .setDescription(description)
-    .setTimestamp();
+    .setTimestamp()
+    .setFooter({
+      text: "Vyne • Moderation & Community"
+    });
 }
+
+function success(title, description) {
+  return embed(
+    `✓ ${title}`,
+    description,
+    COLORS.success
+  );
+}
+
+function danger(title, description) {
+  return embed(
+    `✕ ${title}`,
+    description,
+    COLORS.danger
+  );
+}
+
 function warning(title, description) {
-  return new EmbedBuilder()
-    .setColor(0xfee75c)
-    .setTitle(`⚠️ ${title}`)
-    .setDescription(description)
-    .setTimestamp();
+  return embed(
+    `! ${title}`,
+    description,
+    COLORS.warning
+  );
 }
-function truncate(value, max = 1000) {
-  const text = String(value ?? "None");
-  return text.length <= max ? text : text.slice(0, max - 3) + "...";
+
+function info(title, description) {
+  return embed(
+    title,
+    description,
+    COLORS.primary
+  );
 }
-function parseDuration(value) {
-  const match = String(value || "")
-    .trim()
+
+function truncate(value, length = 1000) {
+  const text = String(value ?? "");
+
+  return text.length > length
+    ? text.slice(0, length - 3) + "..."
+    : text;
+}
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const DEFAULT_CONFIG = {
+  logChannelId: null,
+  modRoleId: null,
+
+  automod: {
+    enabled: true,
+    spam: true,
+    links: false,
+    invites: true,
+    mentions: true,
+    duplicates: true,
+    caps: false,
+    badWords: true,
+    emoji: true,
+
+    spamMessages: 6,
+    spamWindow: 7000,
+    maxMentions: 5,
+
+    blockedWords: [
+      "scamword",
+      "malicious"
+    ],
+
+    timeout: 60000
+  },
+
+  raid: {
+    enabled: false,
+    joinLimit: 8,
+    window: 10000,
+    accountAge: 86400000
+  },
+
+  verification: {
+    enabled: false,
+    channelId: null,
+    roleId: null
+  },
+
+  tickets: {
+    enabled: false,
+    categoryId: null,
+    staffRoleId: null
+  },
+
+  leveling: {
+    enabled: false,
+    xpPerMessage: 5
+  },
+
+  economy: {
+    enabled: false
+  },
+
+  notifications: {
+    channelId: null
+  },
+
+  nextCase: 1
+};
+
+function clone(object) {
+  return JSON.parse(JSON.stringify(object));
+}
+
+function merge(base, override) {
+  const result = {
+    ...base,
+    ...override
+  };
+
+  for (const key of Object.keys(base)) {
+    if (
+      base[key] &&
+      typeof base[key] === "object" &&
+      !Array.isArray(base[key])
+    ) {
+      result[key] = merge(
+        base[key],
+        override?.[key] || {}
+      );
+    }
+  }
+
+  return result;
+}
+
+function getConfig(guildId) {
+  const all = load(files.config);
+
+  const config = merge(
+    clone(DEFAULT_CONFIG),
+    all[guildId] || {}
+  );
+
+  all[guildId] = config;
+
+  save(files.config, all);
+
+  return config;
+}
+
+function setConfig(guildId, config) {
+  const all = load(files.config);
+
+  all[guildId] = config;
+
+  save(files.config, all);
+}
+
+// ============================================================
+// MODERATION HELPERS
+// ============================================================
+
+function isStaff(member) {
+  if (!member) return false;
+
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageGuild
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageMessages
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ModerateMembers
+    )
+  ) {
+    return true;
+  }
+
+  const config = getConfig(member.guild.id);
+
+  return Boolean(
+    config.modRoleId &&
+    member.roles.cache.has(config.modRoleId)
+  );
+}
+
+function hierarchyCheck(
+  moderator,
+  target,
+  botMember
+) {
+  if (!target) {
+    return "That member could not be found.";
+  }
+
+  if (target.id === moderator.id) {
+    return "You cannot moderate yourself.";
+  }
+
+  if (target.id === target.guild.ownerId) {
+    return "You cannot moderate the server owner.";
+  }
+
+  if (
+    moderator.id !== target.guild.ownerId &&
+    target.roles.highest.position >=
+      moderator.roles.highest.position
+  ) {
+    return "That member has an equal or higher role.";
+  }
+
+  if (
+    botMember &&
+    target.roles.highest.position >=
+      botMember.roles.highest.position
+  ) {
+    return "My highest role must be above the target.";
+  }
+
+  return null;
+}
+
+function createCase(guildId, data) {
+  const config = getConfig(guildId);
+
+  const id = config.nextCase++;
+
+  setConfig(guildId, config);
+
+  const all = load(files.cases);
+
+  all[guildId] ??= {};
+
+  all[guildId][id] = {
+    id,
+    ...data,
+    createdAt: Date.now()
+  };
+
+  save(files.cases, all);
+
+  return id;
+}
+
+function getWarnings(guildId, userId) {
+  const all = load(files.warnings);
+
+  return all[guildId]?.[userId] || [];
+}
+
+function addWarning(guildId, userId, data) {
+  const all = load(files.warnings);
+
+  all[guildId] ??= {};
+  all[guildId][userId] ??= [];
+
+  all[guildId][userId].push(data);
+
+  save(files.warnings, all);
+
+  return all[guildId][userId];
+}
+
+function clearWarnings(guildId, userId) {
+  const all = load(files.warnings);
+
+  all[guildId] ??= {};
+  all[guildId][userId] = [];
+
+  save(files.warnings, all);
+}
+
+// ============================================================
+// LOGGING
+// ============================================================
+
+async function log(guild, messageEmbed) {
+  try {
+    const config = getConfig(guild.id);
+
+    if (!config.logChannelId) return;
+
+    const channel = guild.channels.cache.get(
+      config.logChannelId
+    );
+
+    if (!channel?.isTextBased()) return;
+
+    await channel.send({
+      embeds: [messageEmbed]
+    });
+  } catch (error) {
+    console.error(
+      "Logging error:",
+      error.message
+    );
+  }
+}
+
+async function dm(member, title, description) {
+  try {
+    await member.send({
+      embeds: [
+        info(title, description)
+      ]
+    });
+  } catch {}
+}
+
+// ============================================================
+// DURATION
+// ============================================================
+
+function durationMs(input) {
+  const match = String(input || "")
     .toLowerCase()
-    .match(/^(\d+)\s*(s|m|h|d|w)$/);
+    .trim()
+    .match(/^(\d+)(s|m|h|d|w)$/);
+
   if (!match) return null;
+
   const multipliers = {
     s: 1000,
     m: 60000,
@@ -109,263 +456,296 @@ function parseDuration(value) {
     d: 86400000,
     w: 604800000
   };
-  return Number(match[1]) * multipliers[match[2]];
+
+  return Number(match[1]) *
+    multipliers[match[2]];
 }
-function formatDuration(ms) {
-  if (ms >= 604800000) return `${Math.floor(ms / 604800000)}w`;
-  if (ms >= 86400000) return `${Math.floor(ms / 86400000)}d`;
-  if (ms >= 3600000) return `${Math.floor(ms / 3600000)}h`;
-  if (ms >= 60000) return `${Math.floor(ms / 60000)}m`;
-  return `${Math.max(1, Math.floor(ms / 1000))}s`;
-}
-function mergeConfig(base, override) {
-  const result = { ...base, ...override };
-  for (const key of Object.keys(base)) {
-    if (
-      base[key] &&
-      typeof base[key] === "object" &&
-      !Array.isArray(base[key])
-    ) {
-      result[key] = mergeConfig(base[key], override?.[key] || {});
-    }
-  }
-  return result;
-}
-const defaultConfig = {
-  logChannelId: null,
-  modRoleId: null,
-  automod: {
-    enabled: true,
-    antiSpam: true,
-    antiLinks: false,
-    antiInvites: true,
-    antiMentionSpam: true,
-    duplicateMessages: true,
-    excessiveCaps: false,
-    badWords: true,
-    massEmoji: true,
-    attachments: false,
-    spamMessages: 6,
-    spamWindow: 7000,
-    maxMentions: 5,
-    warnThreshold: 3,
-    timeoutDuration: 60000,
-    blockedWords: ["scamword", "malicious"]
-  },
-  raid: {
-    enabled: false,
-    joins: 8,
-    window: 10000,
-    accountAge: 86400000,
-    lockdown: false
-  },
-  verification: {
-    enabled: false,
-    channelId: null,
-    roleId: null
-  },
-  tickets: {
-    categoryId: null,
-    staffRoleId: null
-  },
-  leveling: {
-    enabled: false,
-    xpPerMessage: 5
-  },
-  economy: {
-    enabled: false
-  },
-  notifications: {
-    channelId: null
-  },
-  caseNumber: 1
-};
-function getConfig(guildId) {
-  const all = read(DB.config);
-  const config = mergeConfig(defaultConfig, all[guildId] || {});
-  all[guildId] = config;
-  write(DB.config, all);
-  return config;
-}
-function saveConfig(guildId, config) {
-  const all = read(DB.config);
-  all[guildId] = config;
-  write(DB.config, all);
-}
-function getWarnings(guildId, userId) {
-  const all = read(DB.warnings);
-  return all[guildId]?.[userId] || [];
-}
-function addWarning(guildId, userId, data) {
-  const all = read(DB.warnings);
-  all[guildId] ??= {};
-  all[guildId][userId] ??= [];
-  all[guildId][userId].push(data);
-  write(DB.warnings, all);
-  return all[guildId][userId];
-}
-function clearWarnings(guildId, userId) {
-  const all = read(DB.warnings);
-  all[guildId] ??= {};
-  all[guildId][userId] = [];
-  write(DB.warnings, all);
-}
-function createCase(guildId, data) {
-  const config = getConfig(guildId);
-  const id = config.caseNumber++;
-  saveConfig(guildId, config);
-  const all = read(DB.cases);
-  all[guildId] ??= {};
-  all[guildId][id] = {
-    id,
-    ...data,
-    timestamp: Date.now()
-  };
-  write(DB.cases, all);
-  return id;
-}
-function getCases(guildId, userId) {
-  const all = read(DB.cases);
-  return Object.values(all[guildId] || {})
-    .filter(x => !userId || x.userId === userId)
-    .sort((a, b) => b.timestamp - a.timestamp);
-}
-function isModerator(member) {
-  if (!member) return false;
-  if (
-    member.permissions.has(PermissionFlagsBits.Administrator) ||
-    member.permissions.has(PermissionFlagsBits.ManageGuild) ||
-    member.permissions.has(PermissionFlagsBits.ModerateMembers) ||
-    member.permissions.has(PermissionFlagsBits.ManageMessages)
-  ) {
-    return true;
-  }
-  const config = getConfig(member.guild.id);
-  return Boolean(
-    config.modRoleId && member.roles.cache.has(config.modRoleId)
-  );
-}
-function canModerate(actor, target, botMember) {
-  if (!target) return { allowed: false, reason: "Member not found." };
-  if (target.id === actor.id) {
-    return { allowed: false, reason: "You cannot moderate yourself." };
-  }
-  if (target.id === target.guild.ownerId) {
-    return { allowed: false, reason: "You cannot moderate the server owner." };
-  }
-  if (
-    actor.id !== target.guild.ownerId &&
-    target.roles.highest.position >= actor.roles.highest.position
-  ) {
-    return {
-      allowed: false,
-      reason: "That member has an equal or higher role than you."
-    };
-  }
-  if (
-    botMember &&
-    target.roles.highest.position >= botMember.roles.highest.position
-  ) {
-    return {
-      allowed: false,
-      reason: "My highest role must be above the target."
-    };
-  }
-  return { allowed: true };
-}
-async function sendLog(guild, embed) {
-  try {
-    const config = getConfig(guild.id);
-    if (!config.logChannelId) return;
-    const channel = guild.channels.cache.get(config.logChannelId);
-    if (channel?.isTextBased()) {
-      await channel.send({ embeds: [embed] });
-    }
-  } catch (err) {
-    console.error("Log error:", err.message);
-  }
-}
-async function dmUser(member, title, text) {
-  try {
-    await member.send({
-      embeds: [info(title, text)]
-    });
-  } catch {}
-}
-async function hostingRequest(endpoint, options = {}) {
+
+// ============================================================
+// BOT HOSTING
+// ============================================================
+
+async function hosting(endpoint, options = {}) {
   if (!BOT_HOSTING_API_KEY) {
-    throw new Error("BOT_HOSTING_API_KEY is not configured.");
-  }
-  const response = await fetch(BOT_HOSTING_API + endpoint, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${BOT_HOSTING_API_KEY}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-  const text = await response.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = { raw: text };
-  }
-  if (!response.ok) {
     throw new Error(
-      data.message ||
-      data.error ||
-      `Bot-Hosting HTTP ${response.status}`
+      "BOT_HOSTING_API_KEY is not configured."
     );
   }
+
+  const response = await fetch(
+    HOSTING_API + endpoint,
+    {
+      ...options,
+      headers: {
+        Authorization:
+          `Bearer ${BOT_HOSTING_API_KEY}`,
+        "Content-Type":
+          "application/json",
+        ...(options.headers || {})
+      }
+    }
+  );
+
+  const raw = await response.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = {
+      raw
+    };
+  }
+
+  if (!response.ok) {
+    let message;
+
+    if (typeof data === "string") {
+      message = data;
+    } else if (
+      typeof data.message === "string"
+    ) {
+      message = data.message;
+    } else if (
+      typeof data.error === "string"
+    ) {
+      message = data.error;
+    } else {
+      message = JSON.stringify(
+        data,
+        null,
+        2
+      );
+    }
+
+    throw new Error(
+      `Bot-Hosting API ${response.status}\n${message}`
+    );
+  }
+
   return data;
 }
-async function getVyneDeployment() {
-  const data = await hostingRequest(
-    `/deployments?name=${encodeURIComponent("Vyne Moderation")}&brief=true`
+
+async function deployment() {
+  const result = await hosting(
+    `/deployments?name=${encodeURIComponent(
+      "Vyne Moderation"
+    )}&brief=true`
   );
-  const deployments = data.deployments || [];
-  const deployment =
-    deployments.find(x => x.name === "Vyne Moderation") ||
+
+  const deployments =
+    result.deployments || [];
+
+  const found =
+    deployments.find(
+      x => x.name === "Vyne Moderation"
+    ) ||
     deployments[0];
-  if (!deployment) {
-    throw new Error("Vyne Moderation deployment was not found.");
+
+  if (!found) {
+    throw new Error(
+      "Vyne Moderation deployment was not found."
+    );
   }
-  return deployment;
+
+  return found;
 }
+
+// ============================================================
+// COMPONENTS
+// ============================================================
+
+function helpMenu() {
+  return new ActionRowBuilder()
+    .addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("vyne_help")
+        .setPlaceholder(
+          "Choose a category"
+        )
+        .addOptions([
+          {
+            label: "Moderation",
+            value: "moderation",
+            emoji: "🛡️"
+          },
+          {
+            label: "Security",
+            value: "security",
+            emoji: "🔐"
+          },
+          {
+            label: "Community",
+            value: "community",
+            emoji: "🎫"
+          },
+          {
+            label: "Information",
+            value: "information",
+            emoji: "📊"
+          },
+          {
+            label: "Economy",
+            value: "economy",
+            emoji: "💰"
+          },
+          {
+            label: "System",
+            value: "system",
+            emoji: "⚙️"
+          }
+        ])
+    );
+}
+
+function automodMenu() {
+  return new ActionRowBuilder()
+    .addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("vyne_automod")
+        .setPlaceholder(
+          "Configure AutoMod"
+        )
+        .addOptions([
+          {
+            label: "Master Switch",
+            value: "enabled",
+            emoji: "🛡️"
+          },
+          {
+            label: "Anti Spam",
+            value: "spam",
+            emoji: "🚫"
+          },
+          {
+            label: "Anti Links",
+            value: "links",
+            emoji: "🔗"
+          },
+          {
+            label: "Anti Invites",
+            value: "invites",
+            emoji: "📨"
+          },
+          {
+            label: "Mention Protection",
+            value: "mentions",
+            emoji: "📢"
+          },
+          {
+            label: "Duplicate Messages",
+            value: "duplicates",
+            emoji: "📋"
+          },
+          {
+            label: "Bad Words",
+            value: "badWords",
+            emoji: "🤬"
+          }
+        ])
+    );
+}
+
+function ticketButton() {
+  return new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          "vyne_ticket_create"
+        )
+        .setLabel("Create Ticket")
+        .setEmoji("🎫")
+        .setStyle(
+          ButtonStyle.Primary
+        )
+    );
+}
+
+function verifyButton() {
+  return new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          "vyne_verify"
+        )
+        .setLabel("Verify")
+        .setEmoji("✓")
+        .setStyle(
+          ButtonStyle.Success
+        )
+    );
+}
+
+function closeTicketButton() {
+  return new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          "vyne_ticket_close"
+        )
+        .setLabel("Close Ticket")
+        .setEmoji("🔒")
+        .setStyle(
+          ButtonStyle.Danger
+        )
+    );
+}
+
+// ============================================================
+// COMMANDS
+// ============================================================
+
 const commands = [
+
+  // ---------------- MODERATION ----------------
+
   new SlashCommandBuilder()
     .setName("ban")
     .setDescription("Ban a member")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("reason").setDescription("Reason")
+      o.setName("reason")
+        .setDescription("Reason")
     ),
+
   new SlashCommandBuilder()
     .setName("unban")
     .setDescription("Unban a user")
     .addStringOption(o =>
-      o.setName("user_id").setDescription("User ID").setRequired(true)
+      o.setName("user_id")
+        .setDescription("User ID")
+        .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("reason").setDescription("Reason")
+      o.setName("reason")
+        .setDescription("Reason")
     ),
+
   new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Kick a member")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("reason").setDescription("Reason")
+      o.setName("reason")
+        .setDescription("Reason")
     ),
+
   new SlashCommandBuilder()
     .setName("timeout")
     .setDescription("Timeout a member")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
     .addStringOption(o =>
       o.setName("duration")
@@ -373,50 +753,51 @@ const commands = [
         .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("reason").setDescription("Reason")
+      o.setName("reason")
+        .setDescription("Reason")
     ),
+
   new SlashCommandBuilder()
     .setName("untimeout")
     .setDescription("Remove a timeout")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason")
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription("Warn a member")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
+      o.setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("warnings")
-    .setDescription("View warnings")
+    .setDescription("View member warnings")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("clearwarnings")
-    .setDescription("Clear warnings")
+    .setDescription("Clear member warnings")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     ),
-  new SlashCommandBuilder()
-    .setName("cases")
-    .setDescription("View moderation cases")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("case")
-    .setDescription("View a moderation case")
-    .addIntegerOption(o =>
-      o.setName("id").setDescription("Case ID").setRequired(true)
-    ),
+
   new SlashCommandBuilder()
     .setName("purge")
     .setDescription("Delete messages")
@@ -426,19 +807,19 @@ const commands = [
         .setMinValue(1)
         .setMaxValue(100)
         .setRequired(true)
-    )
-    .addUserOption(o =>
-      o.setName("user").setDescription("Only this user")
     ),
+
   new SlashCommandBuilder()
     .setName("lock")
-    .setDescription("Lock current channel"),
+    .setDescription("Lock this channel"),
+
   new SlashCommandBuilder()
     .setName("unlock")
-    .setDescription("Unlock current channel"),
+    .setDescription("Unlock this channel"),
+
   new SlashCommandBuilder()
     .setName("slowmode")
-    .setDescription("Set channel slowmode")
+    .setDescription("Set slowmode")
     .addIntegerOption(o =>
       o.setName("seconds")
         .setDescription("0-21600")
@@ -446,15 +827,21 @@ const commands = [
         .setMaxValue(21600)
         .setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("nick")
-    .setDescription("Change nickname")
+    .setDescription("Change a member nickname")
     .addUserOption(o =>
-      o.setName("user").setDescription("Member").setRequired(true)
+      o.setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
     .addStringOption(o =>
-      o.setName("nickname").setDescription("New nickname").setRequired(true)
+      o.setName("nickname")
+        .setDescription("Nickname")
+        .setRequired(true)
     ),
+
   new SlashCommandBuilder()
     .setName("role")
     .setDescription("Manage roles")
@@ -462,102 +849,117 @@ const commands = [
       s.setName("add")
         .setDescription("Add a role")
         .addUserOption(o =>
-          o.setName("user").setDescription("Member").setRequired(true)
+          o.setName("user")
+            .setDescription("Member")
+            .setRequired(true)
         )
         .addRoleOption(o =>
-          o.setName("role").setDescription("Role").setRequired(true)
+          o.setName("role")
+            .setDescription("Role")
+            .setRequired(true)
         )
     )
     .addSubcommand(s =>
       s.setName("remove")
         .setDescription("Remove a role")
         .addUserOption(o =>
-          o.setName("user").setDescription("Member").setRequired(true)
+          o.setName("user")
+            .setDescription("Member")
+            .setRequired(true)
         )
         .addRoleOption(o =>
-          o.setName("role").setDescription("Role").setRequired(true)
+          o.setName("role")
+            .setDescription("Role")
+            .setRequired(true)
         )
     )
     .addSubcommand(s =>
       s.setName("create")
         .setDescription("Create a role")
         .addStringOption(o =>
-          o.setName("name").setDescription("Role name").setRequired(true)
+          o.setName("name")
+            .setDescription("Role name")
+            .setRequired(true)
         )
     ),
+
+  // ---------------- INFORMATION ----------------
+
   new SlashCommandBuilder()
-    .setName("userinfo")
-    .setDescription("User information")
-    .addUserOption(o =>
-      o.setName("user").setDescription("User")
-    ),
-  new SlashCommandBuilder()
-    .setName("serverinfo")
-    .setDescription("Server information"),
-  new SlashCommandBuilder()
-    .setName("channelinfo")
-    .setDescription("Channel information"),
-  new SlashCommandBuilder()
-    .setName("roleinfo")
-    .setDescription("Role information")
-    .addRoleOption(o =>
-      o.setName("role").setDescription("Role").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("avatar")
-    .setDescription("View avatar")
-    .addUserOption(o =>
-      o.setName("user").setDescription("User")
-    ),
+    .setName("help")
+    .setDescription("Open the Vyne help center"),
+
   new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Show bot latency"),
+
   new SlashCommandBuilder()
-    .setName("help")
-    .setDescription("Show Vyne help"),
+    .setName("userinfo")
+    .setDescription("View user information")
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("User")
+    ),
+
   new SlashCommandBuilder()
-    .setName("logchannel")
-    .setDescription("Set moderation log channel")
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel")
-        .addChannelTypes(ChannelType.GuildText)
+    .setName("serverinfo")
+    .setDescription("View server information"),
+
+  new SlashCommandBuilder()
+    .setName("channelinfo")
+    .setDescription("View channel information"),
+
+  new SlashCommandBuilder()
+    .setName("roleinfo")
+    .setDescription("View role information")
+    .addRoleOption(o =>
+      o.setName("role")
+        .setDescription("Role")
         .setRequired(true)
     ),
+
   new SlashCommandBuilder()
-    .setName("modrole")
-    .setDescription("Set moderator role")
-    .addRoleOption(o =>
-      o.setName("role").setDescription("Moderator role").setRequired(true)
+    .setName("avatar")
+    .setDescription("View a user's avatar")
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("User")
     ),
-  new SlashCommandBuilder()
-    .setName("config")
-    .setDescription("Show Vyne configuration"),
+
+  // ---------------- SECURITY ----------------
+
   new SlashCommandBuilder()
     .setName("automod")
     .setDescription("Open AutoMod controls"),
+
   new SlashCommandBuilder()
     .setName("raid")
-    .setDescription("Raid protection")
+    .setDescription("Manage raid protection")
     .addSubcommand(s =>
-      s.setName("on").setDescription("Enable raid protection")
+      s.setName("on")
+        .setDescription("Enable")
     )
     .addSubcommand(s =>
-      s.setName("off").setDescription("Disable raid protection")
+      s.setName("off")
+        .setDescription("Disable")
     )
     .addSubcommand(s =>
-      s.setName("status").setDescription("Show raid status")
+      s.setName("status")
+        .setDescription("View status")
     ),
+
   new SlashCommandBuilder()
     .setName("verify")
-    .setDescription("Verification system")
+    .setDescription("Manage verification")
     .addSubcommand(s =>
       s.setName("setup")
         .setDescription("Create verification panel")
         .addChannelOption(o =>
           o.setName("channel")
             .setDescription("Panel channel")
-            .addChannelTypes(ChannelType.GuildText)
+            .addChannelTypes(
+              ChannelType.GuildText
+            )
             .setRequired(true)
         )
         .addRoleOption(o =>
@@ -567,11 +969,15 @@ const commands = [
         )
     )
     .addSubcommand(s =>
-      s.setName("disable").setDescription("Disable verification")
+      s.setName("disable")
+        .setDescription("Disable verification")
     ),
+
+  // ---------------- COMMUNITY ----------------
+
   new SlashCommandBuilder()
     .setName("ticket")
-    .setDescription("Ticket system")
+    .setDescription("Manage tickets")
     .addSubcommand(s =>
       s.setName("setup")
         .setDescription("Configure tickets")
@@ -583,19 +989,47 @@ const commands = [
         .addChannelOption(o =>
           o.setName("category")
             .setDescription("Ticket category")
-            .addChannelTypes(ChannelType.GuildCategory)
+            .addChannelTypes(
+              ChannelType.GuildCategory
+            )
             .setRequired(true)
         )
     )
     .addSubcommand(s =>
-      s.setName("panel").setDescription("Send ticket panel")
+      s.setName("panel")
+        .setDescription("Send ticket panel")
     )
     .addSubcommand(s =>
-      s.setName("close").setDescription("Close current ticket")
+      s.setName("close")
+        .setDescription("Close current ticket")
     ),
+
+  new SlashCommandBuilder()
+    .setName("remind")
+    .setDescription("Create a reminder")
+    .addStringOption(o =>
+      o.setName("duration")
+        .setDescription("10m, 1h, 1d")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("text")
+        .setDescription("Reminder")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Create an announcement")
+    .addStringOption(o =>
+      o.setName("message")
+        .setDescription("Announcement")
+        .setRequired(true)
+    ),
+
   new SlashCommandBuilder()
     .setName("giveaway")
-    .setDescription("Giveaway system")
+    .setDescription("Manage giveaways")
     .addSubcommand(s =>
       s.setName("start")
         .setDescription("Start giveaway")
@@ -610,75 +1044,29 @@ const commands = [
             .setDescription("Prize")
             .setRequired(true)
         )
-    )
-    .addSubcommand(s =>
-      s.setName("end")
-        .setDescription("End giveaway")
-        .addStringOption(o =>
-          o.setName("message_id")
-            .setDescription("Giveaway message ID")
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("reroll")
-        .setDescription("Reroll giveaway")
-        .addStringOption(o =>
-          o.setName("message_id")
-            .setDescription("Giveaway message ID")
-            .setRequired(true)
-        )
     ),
-  new SlashCommandBuilder()
-    .setName("remind")
-    .setDescription("Create a reminder")
-    .addStringOption(o =>
-      o.setName("duration")
-        .setDescription("10m, 1h, 1d")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("text").setDescription("Reminder text").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("notify")
-    .setDescription("Notification settings")
-    .addSubcommand(s =>
-      s.setName("set")
-        .setDescription("Set notification channel")
-        .addChannelOption(o =>
-          o.setName("channel")
-            .setDescription("Channel")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("test").setDescription("Test notifications")
-    ),
-  new SlashCommandBuilder()
-    .setName("level")
-    .setDescription("Show your level")
-    .addUserOption(o =>
-      o.setName("user").setDescription("User")
-    ),
-  new SlashCommandBuilder()
-    .setName("leaderboard")
-    .setDescription("Show XP leaderboard"),
+
+  // ---------------- ECONOMY ----------------
+
   new SlashCommandBuilder()
     .setName("balance")
-    .setDescription("Show balance")
+    .setDescription("View balance")
     .addUserOption(o =>
-      o.setName("user").setDescription("User")
+      o.setName("user")
+        .setDescription("User")
     ),
+
   new SlashCommandBuilder()
     .setName("daily")
-    .setDescription("Claim daily coins"),
+    .setDescription("Claim your daily reward"),
+
   new SlashCommandBuilder()
     .setName("pay")
-    .setDescription("Pay another user")
+    .setDescription("Pay another member")
     .addUserOption(o =>
-      o.setName("user").setDescription("User").setRequired(true)
+      o.setName("user")
+        .setDescription("User")
+        .setRequired(true)
     )
     .addIntegerOption(o =>
       o.setName("amount")
@@ -686,1649 +1074,3435 @@ const commands = [
         .setMinValue(1)
         .setRequired(true)
     ),
+
+  // ---------------- LEVELING ----------------
+
   new SlashCommandBuilder()
-    .setName("announce")
-    .setDescription("Send an announcement")
-    .addStringOption(o =>
-      o.setName("message").setDescription("Announcement").setRequired(true)
+    .setName("level")
+    .setDescription("View a user's level")
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("User")
     ),
+
+  new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("View the XP leaderboard"),
+
+  // ---------------- CONFIG ----------------
+
+  new SlashCommandBuilder()
+    .setName("config")
+    .setDescription("View server configuration"),
+
+  new SlashCommandBuilder()
+    .setName("logchannel")
+    .setDescription("Set moderation log channel")
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel")
+        .addChannelTypes(
+          ChannelType.GuildText
+        )
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("modrole")
+    .setDescription("Set moderator role")
+    .addRoleOption(o =>
+      o.setName("role")
+        .setDescription("Role")
+        .setRequired(true)
+    ),
+
+  // ---------------- SYSTEM ----------------
+
   new SlashCommandBuilder()
     .setName("sys")
-    .setDescription("Owner-only system controls")
+    .setDescription("Vyne system controls")
     .addSubcommand(s =>
-      s.setName("pull").setDescription("Pull latest GitHub code")
+      s.setName("pull")
+        .setDescription("Pull latest GitHub code")
     )
     .addSubcommand(s =>
-      s.setName("restart").setDescription("Restart deployment")
+      s.setName("restart")
+        .setDescription("Restart the deployment")
     )
     .addSubcommand(s =>
-      s.setName("status").setDescription("Show deployment status")
+      s.setName("status")
+        .setDescription("View deployment status")
     )
     .addSubcommand(s =>
-      s.setName("logs").setDescription("Show deployment logs")
+      s.setName("logs")
+        .setDescription("View deployment logs")
     )
     .addSubcommand(s =>
-      s.setName("info").setDescription("Show deployment information")
+      s.setName("info")
+        .setDescription("View deployment information")
     )
+
 ].map(command => command.toJSON());
-client.on("interactionCreate", async interaction => {
-  try {
-    if (interaction.isButton()) {
-      if (interaction.customId === "vyne_verify") {
-        const config = getConfig(interaction.guild.id);
-        if (!config.verification.enabled || !config.verification.roleId) {
-          return interaction.reply({
-            embeds: [errorEmbed("Verification is not enabled.")],
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        const role = interaction.guild.roles.cache.get(
-          config.verification.roleId
-        );
-        if (!role) {
-          return interaction.reply({
-            embeds: [errorEmbed("The verification role no longer exists.")],
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        if (interaction.member.roles.cache.has(role.id)) {
-          return interaction.reply({
-            embeds: [info("Already Verified", "You already have the verified role.")],
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        await interaction.member.roles.add(role, "Vyne verification");
-        return interaction.reply({
-          embeds: [success("Verified", `You now have ${role}.`)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      if (interaction.customId === "vyne_ticket_create") {
-        const config = getConfig(interaction.guild.id);
-        if (!config.tickets.categoryId || !config.tickets.staffRoleId) {
-          return interaction.reply({
-            embeds: [errorEmbed("Tickets are not configured yet.")],
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        const existing = interaction.guild.channels.cache.find(
-          c =>
-            c.type === ChannelType.GuildText &&
-            c.topic === `vyne-ticket:${interaction.user.id}`
-        );
-        if (existing) {
-          return interaction.reply({
+
+// ============================================================
+// HELP PAGES
+// ============================================================
+
+const HELP_PAGES = {
+  moderation: {
+    title: "Moderation",
+    description:
+      "Tools for keeping your server clean and manageable.",
+    commands: [
+      "`/ban` — Ban a member",
+      "`/unban` — Unban a user",
+      "`/kick` — Kick a member",
+      "`/timeout` — Timeout a member",
+      "`/untimeout` — Remove timeout",
+      "`/warn` — Warn a member",
+      "`/warnings` — View warnings",
+      "`/clearwarnings` — Clear warnings",
+      "`/purge` — Delete messages",
+      "`/lock` — Lock a channel",
+      "`/unlock` — Unlock a channel",
+      "`/slowmode` — Configure slowmode",
+      "`/nick` — Change nickname",
+      "`/role` — Manage roles"
+    ]
+  },
+
+  security: {
+    title: "Security",
+    description:
+      "Protection systems for your community.",
+    commands: [
+      "`/automod` — AutoMod dashboard",
+      "`/raid` — Raid protection",
+      "`/verify` — Verification system",
+      "Anti-spam",
+      "Anti-invite",
+      "Mention protection",
+      "Duplicate message detection"
+    ]
+  },
+
+  community: {
+    title: "Community",
+    description:
+      "Tools for running your community.",
+    commands: [
+      "`/ticket` — Ticket system",
+      "`/giveaway` — Giveaways",
+      "`/announce` — Announcements",
+      "`/remind` — Reminders"
+    ]
+  },
+
+  information: {
+    title: "Information",
+    description:
+      "Useful server and member information.",
+    commands: [
+      "`/userinfo`",
+      "`/serverinfo`",
+      "`/channelinfo`",
+      "`/roleinfo`",
+      "`/avatar`",
+      "`/ping`"
+    ]
+  },
+
+  economy: {
+    title: "Economy & Levels",
+    description:
+      "Community progression and economy.",
+    commands: [
+      "`/balance` — View balance",
+      "`/daily` — Daily reward",
+      "`/pay` — Transfer coins",
+      "`/level` — View level",
+      "`/leaderboard` — XP leaderboard"
+    ]
+  },
+
+  system: {
+    title: "System",
+    description:
+      "Owner-only deployment controls.",
+    commands: [
+      "`/sys pull` — Pull GitHub changes",
+      "`/sys restart` — Restart deployment",
+      "`/sys status` — Deployment status",
+      "`/sys logs` — Deployment logs",
+      "`/sys info` — Deployment information"
+    ]
+  }
+};
+
+// ============================================================
+// INTERACTION HANDLER
+// ============================================================
+
+client.on(
+  "interactionCreate",
+  async interaction => {
+
+    try {
+
+      // ======================================================
+      // SELECT MENUS
+      // ======================================================
+
+      if (
+        interaction.isStringSelectMenu()
+      ) {
+
+        // ---------------- HELP ----------------
+
+        if (
+          interaction.customId ===
+          "vyne_help"
+        ) {
+
+          const page =
+            HELP_PAGES[
+              interaction.values[0]
+            ];
+
+          if (!page) return;
+
+          return interaction.update({
             embeds: [
-              info("Ticket Already Open", `You already have ${existing}.`)
+              embed(
+                `Vyne • ${page.title}`,
+                `${page.description}\n\n${page.commands.join("\n")}`
+              )
             ],
-            flags: MessageFlags.Ephemeral
+            components: [
+              helpMenu()
+            ]
           });
         }
-        const channel = await interaction.guild.channels.create({
-          name: `ticket-${interaction.user.username}`.toLowerCase().slice(0, 90),
-          type: ChannelType.GuildText,
-          parent: config.tickets.categoryId,
-          topic: `vyne-ticket:${interaction.user.id}`,
-          permissionOverwrites: [
-            {
-              id: interaction.guild.roles.everyone.id,
-              deny: [PermissionFlagsBits.ViewChannel]
-            },
-            {
-              id: interaction.user.id,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory
-              ]
-            },
-            {
-              id: config.tickets.staffRoleId,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory,
-                PermissionFlagsBits.ManageMessages
-              ]
-            }
-          ]
-        });
-        const closeRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("vyne_ticket_close")
-            .setLabel("Close Ticket")
-            .setStyle(ButtonStyle.Danger)
-        );
-        await channel.send({
-          content: `${interaction.user}`,
-          embeds: [
-            info(
-              "Vyne Ticket",
-              "A staff member will be with you shortly.\n\nUse the button below to close this ticket."
+
+        // ---------------- AUTOMOD ----------------
+
+        if (
+          interaction.customId ===
+          "vyne_automod"
+        ) {
+
+          if (
+            !isStaff(
+              interaction.member
             )
-          ],
-          components: [closeRow]
-        });
-        return interaction.reply({
-          embeds: [success("Ticket Created", `Your ticket is ${channel}.`)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      if (interaction.customId === "vyne_ticket_close") {
-        if (!interaction.channel.name.startsWith("ticket-")) {
-          return interaction.reply({
-            embeds: [errorEmbed("This is not a ticket channel.")],
-            flags: MessageFlags.Ephemeral
+          ) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Permission Denied",
+                  "You need moderation permissions to change AutoMod."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          const config =
+            getConfig(
+              interaction.guild.id
+            );
+
+          const option =
+            interaction.values[0];
+
+          if (
+            option === "enabled"
+          ) {
+            config.automod.enabled =
+              !config.automod.enabled;
+          }
+
+          if (
+            option === "spam"
+          ) {
+            config.automod.spam =
+              !config.automod.spam;
+          }
+
+          if (
+            option === "links"
+          ) {
+            config.automod.links =
+              !config.automod.links;
+          }
+
+          if (
+            option === "invites"
+          ) {
+            config.automod.invites =
+              !config.automod.invites;
+          }
+
+          if (
+            option === "mentions"
+          ) {
+            config.automod.mentions =
+              !config.automod.mentions;
+          }
+
+          if (
+            option === "duplicates"
+          ) {
+            config.automod.duplicates =
+              !config.automod.duplicates;
+          }
+
+          if (
+            option === "badWords"
+          ) {
+            config.automod.badWords =
+              !config.automod.badWords;
+          }
+
+          setConfig(
+            interaction.guild.id,
+            config
+          );
+
+          return interaction.update({
+            embeds: [
+              automodEmbed(
+                interaction.guild.id
+              )
+            ],
+            components: [
+              automodMenu()
+            ]
           });
         }
-        await interaction.reply({
-          embeds: [
-            success("Ticket Closed", "This channel will be deleted in 5 seconds.")
-          ]
-        });
-        setTimeout(() => {
-          interaction.channel?.delete().catch(() => {});
-        }, 5000);
+
         return;
       }
-      return;
-    }
-    if (interaction.isStringSelectMenu()) {
-      if (interaction.customId === "vyne_automod_select") {
-        if (!isModerator(interaction.member)) {
+
+      // ======================================================
+      // BUTTONS
+      // ======================================================
+
+      if (
+        interaction.isButton()
+      ) {
+
+        // ---------------- VERIFY ----------------
+
+        if (
+          interaction.customId ===
+          "vyne_verify"
+        ) {
+
+          const config =
+            getConfig(
+              interaction.guild.id
+            );
+
+          if (
+            !config.verification.enabled ||
+            !config.verification.roleId
+          ) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Verification Unavailable",
+                  "Verification is currently disabled."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          const role =
+            interaction.guild.roles.cache.get(
+              config.verification.roleId
+            );
+
+          if (!role) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Configuration Error",
+                  "The verification role no longer exists."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          if (
+            interaction.member.roles.cache.has(
+              role.id
+            )
+          ) {
+            return interaction.reply({
+              embeds: [
+                info(
+                  "Already Verified",
+                  "You already have access."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          await interaction.member.roles.add(
+            role,
+            "Vyne verification"
+          );
+
           return interaction.reply({
-            embeds: [errorEmbed("You need moderation permissions.")],
-            flags: MessageFlags.Ephemeral
+            embeds: [
+              success(
+                "Verification Complete",
+                `You have been given ${role}.`
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
           });
         }
-        const config = getConfig(interaction.guild.id);
-        const choice = interaction.values[0];
-        if (choice === "toggle") {
-          config.automod.enabled = !config.automod.enabled;
+
+        // ---------------- TICKET ----------------
+
+        if (
+          interaction.customId ===
+          "vyne_ticket_create"
+        ) {
+
+          const config =
+            getConfig(
+              interaction.guild.id
+            );
+
+          if (
+            !config.tickets.enabled ||
+            !config.tickets.categoryId ||
+            !config.tickets.staffRoleId
+          ) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Tickets Disabled",
+                  "The ticket system has not been configured."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          const existing =
+            interaction.guild.channels.cache.find(
+              channel =>
+                channel.type ===
+                  ChannelType.GuildText &&
+                channel.topic ===
+                  `vyne-ticket:${interaction.user.id}`
+            );
+
+          if (existing) {
+            return interaction.reply({
+              embeds: [
+                info(
+                  "Ticket Already Open",
+                  `You already have ${existing}.`
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          const channel =
+            await interaction.guild.channels.create({
+              name:
+                `ticket-${interaction.user.username}`
+                  .toLowerCase()
+                  .replace(/[^a-z0-9-]/g, "")
+                  .slice(0, 80),
+
+              type:
+                ChannelType.GuildText,
+
+              parent:
+                config.tickets.categoryId,
+
+              topic:
+                `vyne-ticket:${interaction.user.id}`,
+
+              permissionOverwrites: [
+                {
+                  id:
+                    interaction.guild
+                      .roles.everyone.id,
+
+                  deny: [
+                    PermissionFlagsBits.ViewChannel
+                  ]
+                },
+
+                {
+                  id:
+                    interaction.user.id,
+
+                  allow: [
+                    PermissionFlagsBits.ViewChannel,
+                    PermissionFlagsBits.SendMessages,
+                    PermissionFlagsBits.ReadMessageHistory
+                  ]
+                },
+
+                {
+                  id:
+                    config.tickets.staffRoleId,
+
+                  allow: [
+                    PermissionFlagsBits.ViewChannel,
+                    PermissionFlagsBits.SendMessages,
+                    PermissionFlagsBits.ReadMessageHistory,
+                    PermissionFlagsBits.ManageMessages
+                  ]
+                }
+              ]
+            });
+
+          await channel.send({
+            content:
+              `${interaction.user} <@&${config.tickets.staffRoleId}>`,
+
+            embeds: [
+              embed(
+                "Support Ticket",
+                "Thanks for contacting the staff team.\n\nPlease explain your issue clearly and someone will assist you shortly."
+              )
+            ],
+
+            components: [
+              closeTicketButton()
+            ]
+          });
+
+          return interaction.reply({
+            embeds: [
+              success(
+                "Ticket Created",
+                `Your ticket is ${channel}.`
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
         }
-        if (choice === "links") {
-          config.automod.antiLinks = !config.automod.antiLinks;
+
+        // ---------------- CLOSE TICKET ----------------
+
+        if (
+          interaction.customId ===
+          "vyne_ticket_close"
+        ) {
+
+          if (
+            !interaction.channel?.name?.startsWith(
+              "ticket-"
+            )
+          ) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Invalid Channel",
+                  "This is not a Vyne ticket."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          await interaction.reply({
+            embeds: [
+              success(
+                "Ticket Closed",
+                "This ticket will be deleted in 5 seconds."
+              )
+            ]
+          });
+
+          setTimeout(() => {
+            interaction.channel
+              ?.delete()
+              .catch(() => {});
+          }, 5000);
+
+          return;
         }
-        if (choice === "spam") {
-          config.automod.antiSpam = !config.automod.antiSpam;
-        }
-        if (choice === "words") {
-          config.automod.badWords = !config.automod.badWords;
-        }
-        if (choice === "mentions") {
-          config.automod.antiMentionSpam =
-            !config.automod.antiMentionSpam;
-        }
-        if (choice === "duplicate") {
-          config.automod.duplicateMessages =
-            !config.automod.duplicateMessages;
-        }
-        saveConfig(interaction.guild.id, config);
-        return interaction.update({
+
+        return;
+      }
+
+      // ======================================================
+      // CHAT COMMANDS
+      // ======================================================
+
+      if (
+        !interaction.isChatInputCommand()
+      ) {
+        return;
+      }
+
+      const command =
+        interaction.commandName;
+
+      // ======================================================
+      // HELP
+      // ======================================================
+
+      if (
+        command === "help"
+      ) {
+
+        return interaction.reply({
           embeds: [
-            info(
-              "AutoMod Updated",
-              [
-                `Enabled: **${config.automod.enabled}**`,
-                `Anti-spam: **${config.automod.antiSpam}**`,
-                `Anti-links: **${config.automod.antiLinks}**`,
-                `Bad words: **${config.automod.badWords}**`,
-                `Mention spam: **${config.automod.antiMentionSpam}**`,
-                `Duplicate messages: **${config.automod.duplicateMessages}**`
-              ].join("\n")
+            embed(
+              "Vyne • Help Center",
+              "Everything you need to manage your community.\n\n**Select a category below to explore commands.**"
             )
           ],
-          components: [automodMenu()]
+          components: [
+            helpMenu()
+          ]
         });
       }
-      return;
-    }
-    if (!interaction.isChatInputCommand()) return;
-    const command = interaction.commandName;
-    const moderationCommands = [
-      "ban",
-      "unban",
-      "kick",
-      "timeout",
-      "untimeout",
-      "warn",
-      "clearwarnings",
-      "purge",
-      "lock",
-      "unlock",
-      "slowmode",
-      "nick",
-      "role",
-      "logchannel",
-      "modrole",
-      "automod",
-      "raid",
-      "verify",
-      "ticket",
-      "giveaway",
-      "notify",
-      "announce"
-    ];
-    if (
-      moderationCommands.includes(command) &&
-      !isModerator(interaction.member)
-    ) {
-      return interaction.reply({
-        embeds: [errorEmbed("You need moderation permissions.")],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "ban") {
-      const user = interaction.options.getUser("user");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided.";
-      const member = await interaction.guild.members
-        .fetch(user.id)
-        .catch(() => null);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const caseId = createCase(interaction.guild.id, {
-        type: "BAN",
-        userId: user.id,
-        moderatorId: interaction.user.id,
-        reason
-      });
-      await dmUser(
-        member,
-        "You were banned",
-        `You were banned from **${interaction.guild.name}**.\nReason: **${reason}**\nCase: **#${caseId}**`
-      );
-      await member.ban({ reason: `Case #${caseId}: ${reason}` });
-      await sendLog(
-        interaction.guild,
-        info(
-          "Member Banned",
-          `User: ${user} (${user.id})\nModerator: ${interaction.user}\nReason: ${reason}\nCase: #${caseId}`
-        )
-      );
-      return interaction.reply({
-        embeds: [
-          success("Member Banned", `${user} has been banned.\nCase: **#${caseId}**`)
-        ]
-      });
-    }
-    if (command === "unban") {
-      const userId = interaction.options.getString("user_id");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided.";
-      const caseId = createCase(interaction.guild.id, {
-        type: "UNBAN",
-        userId,
-        moderatorId: interaction.user.id,
-        reason
-      });
-      await interaction.guild.members.unban(
-        userId,
-        `Case #${caseId}: ${reason}`
-      );
-      return interaction.reply({
-        embeds: [
-          success("User Unbanned", `${userId} has been unbanned.\nCase: **#${caseId}**`)
-        ]
-      });
-    }
-    if (command === "kick") {
-      const user = interaction.options.getUser("user");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided.";
-      const member = await interaction.guild.members
-        .fetch(user.id)
-        .catch(() => null);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const caseId = createCase(interaction.guild.id, {
-        type: "KICK",
-        userId: user.id,
-        moderatorId: interaction.user.id,
-        reason
-      });
-      await dmUser(
-        member,
-        "You were kicked",
-        `You were kicked from **${interaction.guild.name}**.\nReason: **${reason}**\nCase: **#${caseId}**`
-      );
-      await member.kick(`Case #${caseId}: ${reason}`);
-      return interaction.reply({
-        embeds: [
-          success("Member Kicked", `${user} has been kicked.\nCase: **#${caseId}**`)
-        ]
-      });
-    }
-    if (command === "timeout") {
-      const user = interaction.options.getUser("user");
-      const durationText = interaction.options.getString("duration");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided.";
-      const duration = parseDuration(durationText);
-      if (!duration || duration > 28 * 86400000) {
+
+      // ======================================================
+      // PING
+      // ======================================================
+
+      if (
+        command === "ping"
+      ) {
+
         return interaction.reply({
           embeds: [
-            errorEmbed("Invalid duration. Maximum Discord timeout is 28 days.")
+            embed(
+              "Vyne • System",
+              [
+                `**Gateway**  \`${client.ws.ping}ms\``,
+                `**Response**  \`${Date.now() - interaction.createdTimestamp}ms\``,
+                "",
+                "Everything is operational."
+              ].join("\n"),
+              COLORS.success
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // MODERATION PERMISSION
+      // ======================================================
+
+      const staffCommands = [
+        "ban",
+        "unban",
+        "kick",
+        "timeout",
+        "untimeout",
+        "warn",
+        "clearwarnings",
+        "purge",
+        "lock",
+        "unlock",
+        "slowmode",
+        "nick",
+        "role",
+        "automod",
+        "raid",
+        "verify",
+        "ticket",
+        "announce",
+        "giveaway",
+        "logchannel",
+        "modrole"
+      ];
+
+      if (
+        staffCommands.includes(
+          command
+        ) &&
+        !isStaff(
+          interaction.member
+        )
+      ) {
+        return interaction.reply({
+          embeds: [
+            danger(
+              "Permission Denied",
+              "You need the required moderation permissions to use this command."
+            )
           ],
-          flags: MessageFlags.Ephemeral
+          flags:
+            MessageFlags.Ephemeral
         });
       }
-      const member = await interaction.guild.members
-        .fetch(user.id)
-        .catch(() => null);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const caseId = createCase(interaction.guild.id, {
-        type: "TIMEOUT",
-        userId: user.id,
-        moderatorId: interaction.user.id,
-        reason,
-        duration: durationText
-      });
-      await dmUser(
-        member,
-        "You were timed out",
-        `You were timed out in **${interaction.guild.name}** for **${durationText}**.\nReason: **${reason}**\nCase: **#${caseId}**`
-      );
-      await member.timeout(
-        duration,
-        `Case #${caseId}: ${reason}`
-      );
-      return interaction.reply({
-        embeds: [
-          success(
-            "Member Timed Out",
-            `${user} was timed out for **${durationText}**.\nCase: **#${caseId}**`
-          )
-        ]
-      });
-    }
-    if (command === "untimeout") {
-      const user = interaction.options.getUser("user");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided.";
-      const member = await interaction.guild.members
-        .fetch(user.id)
-        .catch(() => null);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      await member.timeout(null, reason);
-      return interaction.reply({
-        embeds: [success("Timeout Removed", `${user} is no longer timed out.`)]
-      });
-    }
-    if (command === "warn") {
-      const user = interaction.options.getUser("user");
-      const reason = interaction.options.getString("reason");
-      const member = await interaction.guild.members
-        .fetch(user.id)
-        .catch(() => null);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const warnings = addWarning(
-        interaction.guild.id,
-        user.id,
-        {
-          moderatorId: interaction.user.id,
-          reason,
-          timestamp: Date.now()
+
+      // ======================================================
+      // BAN
+      // ======================================================
+
+      if (
+        command === "ban"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const reason =
+          interaction.options.getString(
+            "reason"
+          ) ||
+          "No reason provided.";
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Ban",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
         }
-      );
-      const caseId = createCase(interaction.guild.id, {
-        type: "WARN",
-        userId: user.id,
-        moderatorId: interaction.user.id,
-        reason
-      });
-      await dmUser(
-        member,
-        "You received a warning",
-        `You received a warning in **${interaction.guild.name}**.\nReason: **${reason}**\nTotal warnings: **${warnings.length}**\nCase: **#${caseId}**`
-      );
-      const config = getConfig(interaction.guild.id);
-      if (warnings.length >= config.automod.warnThreshold) {
-        await member.timeout(
-          config.automod.timeoutDuration,
-          `Automatic escalation after ${warnings.length} warnings`
-        ).catch(() => {});
-      }
-      return interaction.reply({
-        embeds: [
-          warning(
-            "Warning Added",
-            `${user} now has **${warnings.length}** warning(s).\nCase: **#${caseId}**`
-          )
-        ]
-      });
-    }
-    if (command === "warnings") {
-      const user = interaction.options.getUser("user");
-      const warnings = getWarnings(interaction.guild.id, user.id);
-      if (!warnings.length) {
-        return interaction.reply({
-          embeds: [info("Warnings", `${user} has no warnings.`)]
+
+        const caseId =
+          createCase(
+            interaction.guild.id,
+            {
+              type: "BAN",
+              userId: user.id,
+              moderatorId:
+                interaction.user.id,
+              reason
+            }
+          );
+
+        await dm(
+          member,
+          "You were banned",
+          `You were banned from **${interaction.guild.name}**.\n\n**Reason**\n${reason}\n\n**Case** \`#${caseId}\``
+        );
+
+        await member.ban({
+          reason:
+            `Case #${caseId}: ${reason}`
         });
-      }
-      const text = warnings
-        .slice(-15)
-        .map(
-          (w, i) =>
-            `**${i + 1}.** ${w.reason} — <@${w.moderatorId}>`
-        )
-        .join("\n");
-      return interaction.reply({
-        embeds: [warning("Warnings", `${user}\n\n${text}`)]
-      });
-    }
-    if (command === "clearwarnings") {
-      const user = interaction.options.getUser("user");
-      clearWarnings(interaction.guild.id, user.id);
-      return interaction.reply({
-        embeds: [success("Warnings Cleared", `Cleared warnings for ${user}.`)]
-      });
-    }
-    if (command === "cases") {
-      const user = interaction.options.getUser("user");
-      const cases = getCases(interaction.guild.id, user.id);
-      if (!cases.length) {
-        return interaction.reply({
-          embeds: [info("Cases", "No cases found.")]
-        });
-      }
-      const text = cases
-        .slice(0, 15)
-        .map(
-          c =>
-            `**#${c.id}** • ${c.type} • <@${c.moderatorId}> • ${c.reason}`
-        )
-        .join("\n");
-      return interaction.reply({
-        embeds: [info("Moderation Cases", text)]
-      });
-    }
-    if (command === "case") {
-      const id = interaction.options.getInteger("id");
-      const all = read(DB.cases);
-      const data = all[interaction.guild.id]?.[id];
-      if (!data) {
-        return interaction.reply({
-          embeds: [errorEmbed("Case not found.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      return interaction.reply({
-        embeds: [
-          info(
-            `Case #${id}`,
+
+        await log(
+          interaction.guild,
+          danger(
+            "Member Banned",
             [
-              `Type: **${data.type}**`,
-              `User: <@${data.userId}>`,
-              `Moderator: <@${data.moderatorId}>`,
-              `Reason: **${data.reason}**`,
-              `Date: <t:${Math.floor(data.timestamp / 1000)}:F>`
+              `**User** ${user}`,
+              `**Moderator** ${interaction.user}`,
+              `**Reason** ${reason}`,
+              `**Case** \`#${caseId}\``
             ].join("\n")
           )
-        ]
-      });
-    }
-    if (command === "purge") {
-      const amount = interaction.options.getInteger("amount");
-      const user = interaction.options.getUser("user");
-      if (!interaction.channel.isTextBased()) {
-        return interaction.reply({
-          embeds: [errorEmbed("This command can only be used in a text channel.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const messages = await interaction.channel.messages.fetch({
-        limit: 100
-      });
-      let selected = [...messages.values()].slice(0, amount);
-      if (user) {
-        selected = selected.filter(m => m.author.id === user.id).slice(0, amount);
-      }
-      const deletable = selected.filter(
-        m => Date.now() - m.createdTimestamp < 14 * 86400000
-      );
-      await interaction.channel.bulkDelete(deletable, true);
-      return interaction.reply({
-        embeds: [
-          success(
-            "Messages Purged",
-            `Deleted **${deletable.size || deletable.length}** message(s).`
-          )
-        ],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "lock" || command === "unlock") {
-      const everyone = interaction.guild.roles.everyone;
-      await interaction.channel.permissionOverwrites.edit(
-        everyone,
-        {
-          SendMessages: command === "unlock"
-        },
-        {
-          reason: `Vyne ${command}`
-        }
-      );
-      return interaction.reply({
-        embeds: [
-          success(
-            command === "lock" ? "Channel Locked" : "Channel Unlocked",
-            `${interaction.channel} has been ${command === "lock" ? "locked" : "unlocked"}.`
-          )
-        ]
-      });
-    }
-    if (command === "slowmode") {
-      const seconds = interaction.options.getInteger("seconds");
-      await interaction.channel.setRateLimitPerUser(seconds);
-      return interaction.reply({
-        embeds: [
-          success(
-            "Slowmode Updated",
-            `Slowmode is now **${seconds}s**.`
-          )
-        ]
-      });
-    }
-    if (command === "nick") {
-      const user = interaction.options.getUser("user");
-      const nickname = interaction.options.getString("nickname");
-      const member = await interaction.guild.members.fetch(user.id);
-      const check = canModerate(
-        interaction.member,
-        member,
-        interaction.guild.members.me
-      );
-      if (!check.allowed) {
-        return interaction.reply({
-          embeds: [errorEmbed(check.reason)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      await member.setNickname(nickname);
-      return interaction.reply({
-        embeds: [success("Nickname Updated", `${user} is now **${nickname}**.`)]
-      });
-    }
-    if (command === "role") {
-      const sub = interaction.options.getSubcommand();
-      if (sub === "create") {
-        const name = interaction.options.getString("name");
-        const role = await interaction.guild.roles.create({
-          name,
-          reason: `Created by ${interaction.user.tag}`
-        });
-        return interaction.reply({
-          embeds: [success("Role Created", `${role} was created.`)]
-        });
-      }
-      const user = interaction.options.getUser("user");
-      const role = interaction.options.getRole("role");
-      const member = await interaction.guild.members.fetch(user.id);
-      if (role.position >= interaction.member.roles.highest.position &&
-          interaction.guild.ownerId !== interaction.user.id) {
-        return interaction.reply({
-          embeds: [errorEmbed("You cannot manage a role equal to or higher than your highest role.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      if (role.position >= interaction.guild.members.me.roles.highest.position) {
-        return interaction.reply({
-          embeds: [errorEmbed("My highest role must be above that role.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      if (sub === "add") {
-        await member.roles.add(role);
-      } else {
-        await member.roles.remove(role);
-      }
-      return interaction.reply({
-        embeds: [
-          success(
-            "Role Updated",
-            `${role} was ${sub === "add" ? "added to" : "removed from"} ${user}.`
-          )
-        ]
-      });
-    }
-    if (command === "userinfo") {
-      const user = interaction.options.getUser("user") || interaction.user;
-      const member = await interaction.guild.members.fetch(user.id).catch(() => null);
-      return interaction.reply({
-        embeds: [
-          info(
-            `User Info • ${user.username}`,
-            [
-              `User: ${user}`,
-              `ID: \`${user.id}\``,
-              `Created: <t:${Math.floor(user.createdTimestamp / 1000)}:F>`,
-              member
-                ? `Joined: <t:${Math.floor(member.joinedTimestamp / 1000)}:F>`
-                : "Member: Not in server"
-            ].join("\n")
-          ).setThumbnail(user.displayAvatarURL({ size: 512 }))
-        ]
-      });
-    }
-    if (command === "serverinfo") {
-      const guild = interaction.guild;
-      return interaction.reply({
-        embeds: [
-          info(
-            guild.name,
-            [
-              `Owner: <@${guild.ownerId}>`,
-              `Members: **${guild.memberCount}**`,
-              `Channels: **${guild.channels.cache.size}**`,
-              `Roles: **${guild.roles.cache.size}**`,
-              `Created: <t:${Math.floor(guild.createdTimestamp / 1000)}:F>`
-            ].join("\n")
-          ).setThumbnail(guild.iconURL({ size: 512 }) || null)
-        ]
-      });
-    }
-    if (command === "channelinfo") {
-      const channel = interaction.channel;
-      return interaction.reply({
-        embeds: [
-          info(
-            "Channel Info",
-            [
-              `Name: **${channel.name}**`,
-              `ID: \`${channel.id}\``,
-              `Type: **${channel.type}**`,
-              `Created: <t:${Math.floor(channel.createdTimestamp / 1000)}:F>`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-    if (command === "roleinfo") {
-      const role = interaction.options.getRole("role");
-      return interaction.reply({
-        embeds: [
-          info(
-            `Role Info • ${role.name}`,
-            [
-              `ID: \`${role.id}\``,
-              `Position: **${role.position}**`,
-              `Members: **${role.members.size}**`,
-              `Mentionable: **${role.mentionable}**`,
-              `Managed: **${role.managed}**`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-    if (command === "avatar") {
-      const user = interaction.options.getUser("user") || interaction.user;
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle(`${user.username}'s Avatar`)
-            .setImage(user.displayAvatarURL({ size: 1024 }))
-            .setTimestamp()
-        ]
-      });
-    }
-    if (command === "ping") {
-      return interaction.reply({
-        embeds: [
-          info(
-            "Vyne Ping",
-            `Bot latency: **${client.ws.ping}ms**\nAPI response: **${Date.now() - interaction.createdTimestamp}ms**`
-          )
-        ]
-      });
-    }
-    if (command === "help") {
-      return interaction.reply({
-        embeds: [
-          info(
-            "Vyne Help",
-            [
-              "**Moderation**",
-              "`/ban` `/unban` `/kick` `/timeout` `/untimeout`",
-              "`/warn` `/warnings` `/clearwarnings` `/cases` `/case`",
-              "`/purge` `/lock` `/unlock` `/slowmode` `/nick` `/role`",
-              "",
-              "**Security**",
-              "`/automod` `/raid` `/verify`",
-              "",
-              "**Community**",
-              "`/ticket` `/giveaway` `/remind` `/notify`",
-              "`/level` `/leaderboard` `/balance` `/daily` `/pay`",
-              "",
-              "**Info**",
-              "`/userinfo` `/serverinfo` `/channelinfo` `/roleinfo` `/avatar` `/ping`",
-              "",
-              "**System**",
-              "`/sys pull` `/sys restart` `/sys status` `/sys logs` `/sys info`"
-            ].join("\n")
-          )
-        ]
-      });
-    }
-    if (command === "logchannel") {
-      const channel = interaction.options.getChannel("channel");
-      const config = getConfig(interaction.guild.id);
-      config.logChannelId = channel.id;
-      saveConfig(interaction.guild.id, config);
-      return interaction.reply({
-        embeds: [success("Log Channel Set", `Logs will be sent to ${channel}.`)]
-      });
-    }
-    if (command === "modrole") {
-      const role = interaction.options.getRole("role");
-      const config = getConfig(interaction.guild.id);
-      config.modRoleId = role.id;
-      saveConfig(interaction.guild.id, config);
-      return interaction.reply({
-        embeds: [success("Moderator Role Set", `Moderator role: ${role}`)]
-      });
-    }
-    if (command === "config") {
-      const config = getConfig(interaction.guild.id);
-      return interaction.reply({
-        embeds: [
-          info(
-            "Vyne Configuration",
-            [
-              `Log channel: ${config.logChannelId ? `<#${config.logChannelId}>` : "Not set"}`,
-              `Mod role: ${config.modRoleId ? `<@&${config.modRoleId}>` : "Not set"}`,
-              `AutoMod: **${config.automod.enabled}**`,
-              `Raid protection: **${config.raid.enabled}**`,
-              `Verification: **${config.verification.enabled}**`,
-              `Tickets: **${Boolean(config.tickets.categoryId)}**`,
-              `Leveling: **${config.leveling.enabled}**`,
-              `Economy: **${config.economy.enabled}**`
-            ].join("\n")
-          )
-        ]
-      });
-    }
-    if (command === "automod") {
-      return interaction.reply({
-        embeds: [
-          info(
-            "Vyne AutoMod",
-            "Use the menu below to toggle AutoMod modules."
-          )
-        ],
-        components: [automodMenu()],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "raid") {
-      const sub = interaction.options.getSubcommand();
-      const config = getConfig(interaction.guild.id);
-      if (sub === "on") config.raid.enabled = true;
-      if (sub === "off") config.raid.enabled = false;
-      saveConfig(interaction.guild.id, config);
-      return interaction.reply({
-        embeds: [
-          info(
-            "Raid Protection",
-            `Raid protection is **${config.raid.enabled ? "enabled" : "disabled"}**.`
-          )
-        ]
-      });
-    }
-    if (command === "verify") {
-      const sub = interaction.options.getSubcommand();
-      const config = getConfig(interaction.guild.id);
-      if (sub === "disable") {
-        config.verification.enabled = false;
-        saveConfig(interaction.guild.id, config);
-        return interaction.reply({
-          embeds: [success("Verification Disabled", "Verification is now disabled.")]
-        });
-      }
-      const channel = interaction.options.getChannel("channel");
-      const role = interaction.options.getRole("role");
-      config.verification.enabled = true;
-      config.verification.channelId = channel.id;
-      config.verification.roleId = role.id;
-      saveConfig(interaction.guild.id, config);
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("vyne_verify")
-          .setLabel("Verify")
-          .setStyle(ButtonStyle.Success)
-      );
-      await channel.send({
-        embeds: [
-          info(
-            "Server Verification",
-            "Click the button below to receive the verified role."
-          )
-        ],
-        components: [row]
-      });
-      return interaction.reply({
-        embeds: [success("Verification Setup", `Verification panel sent to ${channel}.`)]
-      });
-    }
-    if (command === "ticket") {
-      const sub = interaction.options.getSubcommand();
-      const config = getConfig(interaction.guild.id);
-      if (sub === "setup") {
-        const staffRole = interaction.options.getRole("staff_role");
-        const category = interaction.options.getChannel("category");
-        config.tickets.staffRoleId = staffRole.id;
-        config.tickets.categoryId = category.id;
-        saveConfig(interaction.guild.id, config);
+        );
+
         return interaction.reply({
           embeds: [
             success(
-              "Ticket System Configured",
-              `Staff role: ${staffRole}\nCategory: ${category}`
+              "Member Banned",
+              [
+                `**User** ${user}`,
+                `**Reason** ${reason}`,
+                `**Case** \`#${caseId}\``
+              ].join("\n")
             )
           ]
         });
       }
-      if (sub === "panel") {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("vyne_ticket_create")
-            .setLabel("Create Ticket")
-            .setStyle(ButtonStyle.Primary)
+
+      // ======================================================
+      // UNBAN
+      // ======================================================
+
+      if (
+        command === "unban"
+      ) {
+
+        const userId =
+          interaction.options.getString(
+            "user_id"
+          );
+
+        const reason =
+          interaction.options.getString(
+            "reason"
+          ) ||
+          "No reason provided.";
+
+        const caseId =
+          createCase(
+            interaction.guild.id,
+            {
+              type: "UNBAN",
+              userId,
+              moderatorId:
+                interaction.user.id,
+              reason
+            }
+          );
+
+        await interaction.guild.members.unban(
+          userId,
+          `Case #${caseId}: ${reason}`
         );
-        await interaction.channel.send({
-          embeds: [
-            info(
-              "Support Tickets",
-              "Need help? Click **Create Ticket** to open a private support channel."
-            )
-          ],
-          components: [row]
-        });
+
         return interaction.reply({
-          embeds: [success("Panel Sent", "Ticket panel created.")],
-          flags: MessageFlags.Ephemeral
+          embeds: [
+            success(
+              "User Unbanned",
+              [
+                `**User ID** \`${userId}\``,
+                `**Reason** ${reason}`,
+                `**Case** \`#${caseId}\``
+              ].join("\n")
+            )
+          ]
         });
       }
-      if (sub === "close") {
-        if (!interaction.channel.name.startsWith("ticket-")) {
+
+      // ======================================================
+      // KICK
+      // ======================================================
+
+      if (
+        command === "kick"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const reason =
+          interaction.options.getString(
+            "reason"
+          ) ||
+          "No reason provided.";
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
           return interaction.reply({
-            embeds: [errorEmbed("This is not a ticket channel.")],
-            flags: MessageFlags.Ephemeral
+            embeds: [
+              danger(
+                "Cannot Kick",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
           });
         }
-        await interaction.reply({
-          embeds: [success("Ticket Closed", "Deleting this channel in 5 seconds.")]
+
+        const caseId =
+          createCase(
+            interaction.guild.id,
+            {
+              type: "KICK",
+              userId: user.id,
+              moderatorId:
+                interaction.user.id,
+              reason
+            }
+          );
+
+        await dm(
+          member,
+          "You were kicked",
+          `You were kicked from **${interaction.guild.name}**.\n\n**Reason** ${reason}\n**Case** \`#${caseId}\``
+        );
+
+        await member.kick(
+          `Case #${caseId}: ${reason}`
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Member Kicked",
+              `${user} has been removed.\n\n**Case** \`#${caseId}\``
+            )
+          ]
         });
-        setTimeout(() => {
-          interaction.channel.delete().catch(() => {});
-        }, 5000);
+      }
+
+      // ======================================================
+      // TIMEOUT
+      // ======================================================
+
+      if (
+        command === "timeout"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const duration =
+          interaction.options.getString(
+            "duration"
+          );
+
+        const reason =
+          interaction.options.getString(
+            "reason"
+          ) ||
+          "No reason provided.";
+
+        const milliseconds =
+          durationMs(duration);
+
+        if (
+          !milliseconds ||
+          milliseconds >
+            28 * 86400000
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Invalid Duration",
+                "Use values such as `10m`, `1h`, `1d`. Maximum is 28 days."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Timeout",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const caseId =
+          createCase(
+            interaction.guild.id,
+            {
+              type: "TIMEOUT",
+              userId: user.id,
+              moderatorId:
+                interaction.user.id,
+              reason,
+              duration
+            }
+          );
+
+        await member.timeout(
+          milliseconds,
+          `Case #${caseId}: ${reason}`
+        );
+
+        await dm(
+          member,
+          "You were timed out",
+          `**Duration** ${duration}\n**Reason** ${reason}\n**Case** \`#${caseId}\``
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Member Timed Out",
+              [
+                `**User** ${user}`,
+                `**Duration** ${duration}`,
+                `**Reason** ${reason}`,
+                `**Case** \`#${caseId}\``
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // UNTIMEOUT
+      // ======================================================
+
+      if (
+        command === "untimeout"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Remove Timeout",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        await member.timeout(
+          null,
+          `Removed by ${interaction.user.tag}`
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Timeout Removed",
+              `${user} can speak again.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // WARN
+      // ======================================================
+
+      if (
+        command === "warn"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const reason =
+          interaction.options.getString(
+            "reason"
+          );
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Warn",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const warnings =
+          addWarning(
+            interaction.guild.id,
+            user.id,
+            {
+              moderatorId:
+                interaction.user.id,
+              reason,
+              createdAt:
+                Date.now()
+            }
+          );
+
+        const caseId =
+          createCase(
+            interaction.guild.id,
+            {
+              type: "WARN",
+              userId: user.id,
+              moderatorId:
+                interaction.user.id,
+              reason
+            }
+          );
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        if (
+          warnings.length >=
+          3
+        ) {
+          await member.timeout(
+            config.automod.timeout,
+            "Automatic warning escalation"
+          ).catch(() => {});
+        }
+
+        await dm(
+          member,
+          "Warning issued",
+          `**Reason** ${reason}\n**Warnings** ${warnings.length}\n**Case** \`#${caseId}\``
+        );
+
+        return interaction.reply({
+          embeds: [
+            warning(
+              "Warning Issued",
+              [
+                `**User** ${user}`,
+                `**Reason** ${reason}`,
+                `**Warnings** ${warnings.length}`,
+                `**Case** \`#${caseId}\``
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // WARNINGS
+      // ======================================================
+
+      if (
+        command === "warnings"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const warnings =
+          getWarnings(
+            interaction.guild.id,
+            user.id
+          );
+
+        if (!warnings.length) {
+          return interaction.reply({
+            embeds: [
+              info(
+                "Warnings",
+                `${user} has no recorded warnings.`
+              )
+            ]
+          });
+        }
+
+        const text =
+          warnings
+            .slice(-10)
+            .map(
+              (w, i) =>
+                `**${i + 1}.** ${truncate(w.reason, 180)}\n> Moderator <@${w.moderatorId}>`
+            )
+            .join("\n\n");
+
+        return interaction.reply({
+          embeds: [
+            warning(
+              `${user.username} • Warnings`,
+              text
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // CLEAR WARNINGS
+      // ======================================================
+
+      if (
+        command === "clearwarnings"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        clearWarnings(
+          interaction.guild.id,
+          user.id
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Warnings Cleared",
+              `All warnings for ${user} have been cleared.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // PURGE
+      // ======================================================
+
+      if (
+        command === "purge"
+      ) {
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        if (
+          !interaction.channel?.isTextBased()
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Invalid Channel",
+                "This command requires a text channel."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const messages =
+          await interaction.channel.bulkDelete(
+            amount,
+            true
+          );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Messages Purged",
+              `Deleted **${messages.size}** messages.`
+            )
+          ],
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      // ======================================================
+      // LOCK / UNLOCK
+      // ======================================================
+
+      if (
+        command === "lock" ||
+        command === "unlock"
+      ) {
+
+        const locked =
+          command === "lock";
+
+        await interaction.channel
+          .permissionOverwrites.edit(
+            interaction.guild.roles.everyone,
+            {
+              SendMessages:
+                !locked
+            }
+          );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              locked
+                ? "Channel Locked"
+                : "Channel Unlocked",
+              locked
+                ? "Members can no longer send messages here."
+                : "Members can send messages again."
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // SLOWMODE
+      // ======================================================
+
+      if (
+        command === "slowmode"
+      ) {
+
+        const seconds =
+          interaction.options.getInteger(
+            "seconds"
+          );
+
+        await interaction.channel.setRateLimitPerUser(
+          seconds
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Slowmode Updated",
+              seconds === 0
+                ? "Slowmode has been disabled."
+                : `Slowmode is now **${seconds}s**.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // NICK
+      // ======================================================
+
+      if (
+        command === "nick"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const nickname =
+          interaction.options.getString(
+            "nickname"
+          );
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id);
+
+        const hierarchy =
+          hierarchyCheck(
+            interaction.member,
+            member,
+            interaction.guild.members.me
+          );
+
+        if (hierarchy) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Change Nickname",
+                hierarchy
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        await member.setNickname(
+          nickname
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Nickname Updated",
+              `${user}'s nickname is now **${nickname}**.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // ROLE
+      // ======================================================
+
+      if (
+        command === "role"
+      ) {
+
+        const sub =
+          interaction.options.getSubcommand();
+
+        if (
+          sub === "create"
+        ) {
+
+          const name =
+            interaction.options.getString(
+              "name"
+            );
+
+          const role =
+            await interaction.guild.roles.create({
+              name,
+              reason:
+                `Created by ${interaction.user.tag}`
+            });
+
+          return interaction.reply({
+            embeds: [
+              success(
+                "Role Created",
+                `Created ${role}.`
+              )
+            ]
+          });
+        }
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const role =
+          interaction.options.getRole(
+            "role"
+          );
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id);
+
+        if (
+          role.position >=
+            interaction.guild.members.me
+              .roles.highest.position
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Manage Role",
+                "That role is above my highest role."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        if (
+          interaction.user.id !==
+            interaction.guild.ownerId &&
+          role.position >=
+            interaction.member.roles
+              .highest.position
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Cannot Manage Role",
+                "That role is equal to or higher than your highest role."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        if (
+          sub === "add"
+        ) {
+          await member.roles.add(
+            role
+          );
+        } else {
+          await member.roles.remove(
+            role
+          );
+        }
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Role Updated",
+              `${role} was ${sub === "add" ? "added to" : "removed from"} ${user}.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // USER INFO
+      // ======================================================
+
+      if (
+        command === "userinfo"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          ) ||
+          interaction.user;
+
+        const member =
+          await interaction.guild.members
+            .fetch(user.id)
+            .catch(() => null);
+
+        const userEmbed =
+          embed(
+            `User • ${user.username}`,
+            [
+              `**ID** \`${user.id}\``,
+              `**Created** <t:${Math.floor(user.createdTimestamp / 1000)}:R>`,
+              member
+                ? `**Joined** <t:${Math.floor(member.joinedTimestamp / 1000)}:R>`
+                : "**Member** Not in server"
+            ].join("\n")
+          )
+          .setThumbnail(
+            user.displayAvatarURL({
+              size: 512
+            })
+          );
+
+        if (member) {
+          userEmbed.addFields({
+            name: "Roles",
+            value:
+              member.roles.cache
+                .filter(
+                  role =>
+                    role.id !==
+                    interaction.guild.id
+                )
+                .map(role => role.toString())
+                .slice(0, 15)
+                .join(" ") ||
+              "None"
+          });
+        }
+
+        return interaction.reply({
+          embeds: [
+            userEmbed
+          ]
+        });
+      }
+
+      // ======================================================
+      // SERVER INFO
+      // ======================================================
+
+      if (
+        command === "serverinfo"
+      ) {
+
+        const guild =
+          interaction.guild;
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `Server • ${guild.name}`,
+              [
+                `**Owner** <@${guild.ownerId}>`,
+                `**Members** ${guild.memberCount}`,
+                `**Channels** ${guild.channels.cache.size}`,
+                `**Roles** ${guild.roles.cache.size}`,
+                `**Created** <t:${Math.floor(guild.createdTimestamp / 1000)}:R>`
+              ].join("\n")
+            )
+              .setThumbnail(
+                guild.iconURL({
+                  size: 512
+                }) || null
+              )
+          ]
+        });
+      }
+
+      // ======================================================
+      // CHANNEL INFO
+      // ======================================================
+
+      if (
+        command === "channelinfo"
+      ) {
+
+        const channel =
+          interaction.channel;
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `Channel • #${channel.name}`,
+              [
+                `**ID** \`${channel.id}\``,
+                `**Type** ${channel.type}`,
+                `**Created** <t:${Math.floor(channel.createdTimestamp / 1000)}:R>`
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // ROLE INFO
+      // ======================================================
+
+      if (
+        command === "roleinfo"
+      ) {
+
+        const role =
+          interaction.options.getRole(
+            "role"
+          );
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `Role • ${role.name}`,
+              [
+                `**ID** \`${role.id}\``,
+                `**Position** ${role.position}`,
+                `**Members** ${role.members.size}`,
+                `**Mentionable** ${role.mentionable}`,
+                `**Managed** ${role.managed}`
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // AVATAR
+      // ======================================================
+
+      if (
+        command === "avatar"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          ) ||
+          interaction.user;
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `${user.username} • Avatar`
+            )
+              .setImage(
+                user.displayAvatarURL({
+                  size: 1024
+                })
+              )
+          ]
+        });
+      }
+
+      // ======================================================
+      // AUTOMOD
+      // ======================================================
+
+      if (
+        command === "automod"
+      ) {
+
+        return interaction.reply({
+          embeds: [
+            automodEmbed(
+              interaction.guild.id
+            )
+          ],
+          components: [
+            automodMenu()
+          ]
+        });
+      }
+
+      // ======================================================
+      // RAID
+      // ======================================================
+
+      if (
+        command === "raid"
+      ) {
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        const sub =
+          interaction.options.getSubcommand();
+
+        if (
+          sub === "on"
+        ) {
+          config.raid.enabled =
+            true;
+        }
+
+        if (
+          sub === "off"
+        ) {
+          config.raid.enabled =
+            false;
+        }
+
+        setConfig(
+          interaction.guild.id,
+          config
+        );
+
+        return interaction.reply({
+          embeds: [
+            info(
+              "Raid Protection",
+              `Status: **${config.raid.enabled ? "Enabled" : "Disabled"}**`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // VERIFICATION
+      // ======================================================
+
+      if (
+        command === "verify"
+      ) {
+
+        const sub =
+          interaction.options.getSubcommand();
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        if (
+          sub === "disable"
+        ) {
+
+          config.verification.enabled =
+            false;
+
+          setConfig(
+            interaction.guild.id,
+            config
+          );
+
+          return interaction.reply({
+            embeds: [
+              success(
+                "Verification Disabled",
+                "The verification system has been disabled."
+              )
+            ]
+          });
+        }
+
+        const channel =
+          interaction.options.getChannel(
+            "channel"
+          );
+
+        const role =
+          interaction.options.getRole(
+            "role"
+          );
+
+        config.verification.enabled =
+          true;
+
+        config.verification.channelId =
+          channel.id;
+
+        config.verification.roleId =
+          role.id;
+
+        setConfig(
+          interaction.guild.id,
+          config
+        );
+
+        await channel.send({
+          embeds: [
+            embed(
+              "Server Verification",
+              "Click the button below to verify your account and receive access."
+            )
+          ],
+          components: [
+            verifyButton()
+          ]
+        });
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Verification Ready",
+              `The verification panel has been sent to ${channel}.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // TICKETS
+      // ======================================================
+
+      if (
+        command === "ticket"
+      ) {
+
+        const sub =
+          interaction.options.getSubcommand();
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        if (
+          sub === "setup"
+        ) {
+
+          const staffRole =
+            interaction.options.getRole(
+              "staff_role"
+            );
+
+          const category =
+            interaction.options.getChannel(
+              "category"
+            );
+
+          config.tickets.enabled =
+            true;
+
+          config.tickets.staffRoleId =
+            staffRole.id;
+
+          config.tickets.categoryId =
+            category.id;
+
+          setConfig(
+            interaction.guild.id,
+            config
+          );
+
+          return interaction.reply({
+            embeds: [
+              success(
+                "Ticket System Ready",
+                [
+                  `**Staff** ${staffRole}`,
+                  `**Category** ${category}`
+                ].join("\n")
+              )
+            ]
+          });
+        }
+
+        if (
+          sub === "panel"
+        ) {
+
+          await interaction.channel.send({
+            embeds: [
+              embed(
+                "Support Center",
+                "Need help? Open a private ticket and our staff team will assist you."
+              )
+            ],
+            components: [
+              ticketButton()
+            ]
+          });
+
+          return interaction.reply({
+            embeds: [
+              success(
+                "Panel Sent",
+                "The ticket panel is now active."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        if (
+          sub === "close"
+        ) {
+
+          if (
+            !interaction.channel.name.startsWith(
+              "ticket-"
+            )
+          ) {
+            return interaction.reply({
+              embeds: [
+                danger(
+                  "Not a Ticket",
+                  "This channel is not a Vyne ticket."
+                )
+              ],
+              flags:
+                MessageFlags.Ephemeral
+            });
+          }
+
+          await interaction.reply({
+            embeds: [
+              success(
+                "Ticket Closed",
+                "Deleting this channel in 5 seconds."
+              )
+            ]
+          });
+
+          setTimeout(() => {
+            interaction.channel
+              .delete()
+              .catch(() => {});
+          }, 5000);
+
+          return;
+        }
+      }
+
+      // ======================================================
+      // REMINDER
+      // ======================================================
+
+      if (
+        command === "remind"
+      ) {
+
+        const duration =
+          interaction.options.getString(
+            "duration"
+          );
+
+        const text =
+          interaction.options.getString(
+            "text"
+          );
+
+        const ms =
+          durationMs(duration);
+
+        if (!ms) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Invalid Duration",
+                "Use `10m`, `1h`, `1d`, etc."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const reminders =
+          load(files.reminders);
+
+        const id =
+          `${interaction.user.id}-${Date.now()}`;
+
+        reminders[id] = {
+          userId:
+            interaction.user.id,
+          channelId:
+            interaction.channel.id,
+          text,
+          executeAt:
+            Date.now() + ms
+        };
+
+        save(
+          files.reminders,
+          reminders
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Reminder Set",
+              `I'll remind you in **${duration}**.`
+            )
+          ],
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      // ======================================================
+      // ANNOUNCE
+      // ======================================================
+
+      if (
+        command === "announce"
+      ) {
+
+        const message =
+          interaction.options.getString(
+            "message"
+          );
+
+        await interaction.channel.send({
+          embeds: [
+            embed(
+              "Announcement",
+              message
+            )
+              .setFooter({
+                text:
+                  `Posted by ${interaction.user.tag}`
+              })
+          ]
+        });
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Announcement Posted",
+              "Your announcement has been sent."
+            )
+          ],
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      // ======================================================
+      // BALANCE
+      // ======================================================
+
+      if (
+        command === "balance"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          ) ||
+          interaction.user;
+
+        const economy =
+          load(files.economy);
+
+        economy[interaction.guild.id] ??= {};
+
+        economy[interaction.guild.id][user.id] ??= {
+          balance: 0,
+          daily: 0
+        };
+
+        save(
+          files.economy,
+          economy
+        );
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `Economy • ${user.username}`,
+              `**Balance**\n${economy[interaction.guild.id][user.id].balance} coins`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // DAILY
+      // ======================================================
+
+      if (
+        command === "daily"
+      ) {
+
+        const economy =
+          load(files.economy);
+
+        economy[interaction.guild.id] ??= {};
+
+        economy[interaction.guild.id][interaction.user.id] ??= {
+          balance: 0,
+          daily: 0
+        };
+
+        const account =
+          economy[
+            interaction.guild.id
+          ][
+            interaction.user.id
+          ];
+
+        if (
+          Date.now() -
+            account.daily <
+          86400000
+        ) {
+          return interaction.reply({
+            embeds: [
+              warning(
+                "Daily Already Claimed",
+                "Come back tomorrow."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        account.balance += 500;
+        account.daily =
+          Date.now();
+
+        save(
+          files.economy,
+          economy
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Daily Reward",
+              "You received **500 coins**."
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // PAY
+      // ======================================================
+
+      if (
+        command === "pay"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        if (
+          user.id ===
+          interaction.user.id
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Invalid Payment",
+                "You cannot pay yourself."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const economy =
+          load(files.economy);
+
+        economy[interaction.guild.id] ??= {};
+
+        for (
+          const id of [
+            interaction.user.id,
+            user.id
+          ]
+        ) {
+          economy[
+            interaction.guild.id
+          ][id] ??= {
+            balance: 0,
+            daily: 0
+          };
+        }
+
+        const sender =
+          economy[
+            interaction.guild.id
+          ][
+            interaction.user.id
+          ];
+
+        const receiver =
+          economy[
+            interaction.guild.id
+          ][
+            user.id
+          ];
+
+        if (
+          sender.balance <
+          amount
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Insufficient Funds",
+                "You don't have enough coins."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        sender.balance -=
+          amount;
+
+        receiver.balance +=
+          amount;
+
+        save(
+          files.economy,
+          economy
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Payment Sent",
+              `Transferred **${amount} coins** to ${user}.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // LEVEL
+      // ======================================================
+
+      if (
+        command === "level"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          ) ||
+          interaction.user;
+
+        const levels =
+          load(files.levels);
+
+        const data =
+          levels[
+            interaction.guild.id
+          ]?.[user.id] || {
+            xp: 0,
+            level: 0
+          };
+
+        const progress =
+          data.xp % 100;
+
+        const filled =
+          Math.floor(
+            progress / 10
+          );
+
+        const bar =
+          "█".repeat(filled) +
+          "░".repeat(
+            10 - filled
+          );
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              `Level • ${user.username}`,
+              [
+                `**Level** ${data.level}`,
+                `**XP** ${data.xp}`,
+                "",
+                `${bar}  ${progress}/100`
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // LEADERBOARD
+      // ======================================================
+
+      if (
+        command === "leaderboard"
+      ) {
+
+        const levels =
+          load(files.levels);
+
+        const data =
+          levels[
+            interaction.guild.id
+          ] || {};
+
+        const rows =
+          Object.entries(data)
+            .sort(
+              (a, b) =>
+                (b[1].xp || 0) -
+                (a[1].xp || 0)
+            )
+            .slice(0, 10);
+
+        if (!rows.length) {
+          return interaction.reply({
+            embeds: [
+              info(
+                "Leaderboard",
+                "There is no XP data yet."
+              )
+            ]
+          });
+        }
+
+        const text =
+          rows
+            .map(
+              ([id, value], index) =>
+                `**${index + 1}.** <@${id}> — Level **${value.level || 0}** • ${value.xp || 0} XP`
+            )
+            .join("\n");
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              "XP Leaderboard",
+              text
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // CONFIG
+      // ======================================================
+
+      if (
+        command === "config"
+      ) {
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        return interaction.reply({
+          embeds: [
+            embed(
+              "Vyne • Configuration",
+              [
+                `**Logs** ${config.logChannelId ? `<#${config.logChannelId}>` : "Not configured"}`,
+                `**Moderator Role** ${config.modRoleId ? `<@&${config.modRoleId}>` : "Not configured"}`,
+                "",
+                `**AutoMod** ${config.automod.enabled ? "Enabled" : "Disabled"}`,
+                `**Raid Protection** ${config.raid.enabled ? "Enabled" : "Disabled"}`,
+                `**Verification** ${config.verification.enabled ? "Enabled" : "Disabled"}`,
+                `**Tickets** ${config.tickets.enabled ? "Enabled" : "Disabled"}`
+              ].join("\n")
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // LOG CHANNEL
+      // ======================================================
+
+      if (
+        command === "logchannel"
+      ) {
+
+        const channel =
+          interaction.options.getChannel(
+            "channel"
+          );
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        config.logChannelId =
+          channel.id;
+
+        setConfig(
+          interaction.guild.id,
+          config
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Logs Configured",
+              `Moderation logs will be sent to ${channel}.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // MOD ROLE
+      // ======================================================
+
+      if (
+        command === "modrole"
+      ) {
+
+        const role =
+          interaction.options.getRole(
+            "role"
+          );
+
+        const config =
+          getConfig(
+            interaction.guild.id
+          );
+
+        config.modRoleId =
+          role.id;
+
+        setConfig(
+          interaction.guild.id,
+          config
+        );
+
+        return interaction.reply({
+          embeds: [
+            success(
+              "Moderator Role Set",
+              `Vyne will recognize ${role} as a moderator role.`
+            )
+          ]
+        });
+      }
+
+      // ======================================================
+      // SYS
+      // ======================================================
+
+      if (
+        command === "sys"
+      ) {
+
+        if (
+          !VYNE_OWNER_ID ||
+          interaction.user.id !==
+            VYNE_OWNER_ID
+        ) {
+          return interaction.reply({
+            embeds: [
+              danger(
+                "Owner Only",
+                "This command is restricted to the bot owner."
+              )
+            ],
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        const sub =
+          interaction.options.getSubcommand();
+
+        await interaction.deferReply({
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        try {
+
+          const deploy =
+            await deployment();
+
+          if (
+            sub === "pull"
+          ) {
+
+            const result =
+              await hosting(
+                `/deployments/${deploy.id}/sync`,
+                {
+                  method: "POST"
+                }
+              );
+
+            return interaction.editReply({
+              embeds: [
+                success(
+                  "GitHub Sync Started",
+                  [
+                    `**Deployment** ${deploy.name}`,
+                    "",
+                    "The latest GitHub commit has been requested."
+                  ].join("\n")
+                )
+              ]
+            });
+          }
+
+          if (
+            sub === "restart"
+          ) {
+
+            const result =
+              await hosting(
+                `/deployments/${deploy.id}/power`,
+                {
+                  method: "POST",
+                  body:
+                    JSON.stringify({
+                      action: "restart",
+                      waitSeconds: 10
+                    })
+                }
+              );
+
+            return interaction.editReply({
+              embeds: [
+                success(
+                  "Restart Requested",
+                  "Vyne is restarting."
+                )
+              ]
+            });
+          }
+
+          if (
+            sub === "status"
+          ) {
+
+            const result =
+              await hosting(
+                `/deployments/${deploy.id}/diagnose`
+              );
+
+            return interaction.editReply({
+              embeds: [
+                embed(
+                  "Vyne • Deployment Status",
+                  `\`\`\`json\n${truncate(
+                    JSON.stringify(
+                      result,
+                      null,
+                      2
+                    ),
+                    3500
+                  )}\n\`\`\``
+                )
+              ]
+            });
+          }
+
+          if (
+            sub === "logs"
+          ) {
+
+            const result =
+              await hosting(
+                `/deployments/${deploy.id}/logs?size=1000`
+              );
+
+            return interaction.editReply({
+              embeds: [
+                embed(
+                  "Vyne • Deployment Logs",
+                  `\`\`\`\n${truncate(
+                    JSON.stringify(
+                      result,
+                      null,
+                      2
+                    ),
+                    3500
+                  )}\n\`\`\``
+                )
+              ]
+            });
+          }
+
+          if (
+            sub === "info"
+          ) {
+
+            const result =
+              await hosting(
+                `/deployments/${deploy.id}`
+              );
+
+            return interaction.editReply({
+              embeds: [
+                embed(
+                  "Vyne • Deployment",
+                  `\`\`\`json\n${truncate(
+                    JSON.stringify(
+                      result,
+                      null,
+                      2
+                    ),
+                    3500
+                  )}\n\`\`\``
+                )
+              ]
+            });
+          }
+
+        } catch (error) {
+
+          return interaction.editReply({
+            embeds: [
+              danger(
+                "System Error",
+                `\`\`\`\n${truncate(
+                  error.message,
+                  3000
+                )}\n\`\`\``
+              )
+            ]
+          });
+        }
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Interaction error:",
+        error
+      );
+
+      const response = {
+        embeds: [
+          danger(
+            "Something Went Wrong",
+            "Vyne encountered an unexpected error while processing that command."
+          )
+        ],
+        flags:
+          MessageFlags.Ephemeral
+      };
+
+      if (
+        interaction.replied ||
+        interaction.deferred
+      ) {
+        await interaction
+          .followUp(response)
+          .catch(() => {});
+      } else {
+        await interaction
+          .reply(response)
+          .catch(() => {});
+      }
+    }
+  }
+);
+
+// ============================================================
+// AUTOMOD
+// ============================================================
+
+const spamMap = new Map();
+const duplicateMap = new Map();
+
+client.on(
+  "messageCreate",
+  async message => {
+
+    if (
+      !message.guild ||
+      message.author.bot
+    ) {
+      return;
+    }
+
+    const config =
+      getConfig(
+        message.guild.id
+      );
+
+    // ---------------- LEVEL XP ----------------
+
+    if (
+      config.leveling.enabled
+    ) {
+
+      const levels =
+        load(files.levels);
+
+      levels[message.guild.id] ??= {};
+
+      levels[
+        message.guild.id
+      ][
+        message.author.id
+      ] ??= {
+        xp: 0,
+        level: 0
+      };
+
+      const user =
+        levels[
+          message.guild.id
+        ][
+          message.author.id
+        ];
+
+      user.xp +=
+        config.leveling.xpPerMessage;
+
+      const newLevel =
+        Math.floor(
+          user.xp / 100
+        );
+
+      if (
+        newLevel >
+        user.level
+      ) {
+
+        user.level =
+          newLevel;
+
+        await message.channel
+          .send({
+            embeds: [
+              success(
+                "Level Up",
+                `${message.author} reached **Level ${newLevel}**.`
+              )
+            ]
+          })
+          .catch(() => {});
+      }
+
+      save(
+        files.levels,
+        levels
+      );
+    }
+
+    // ---------------- AUTOMOD ----------------
+
+    if (
+      !config.automod.enabled ||
+      isStaff(message.member)
+    ) {
+      return;
+    }
+
+    const content =
+      message.content || "";
+
+    const now =
+      Date.now();
+
+    // Links
+
+    if (
+      config.automod.links &&
+      /https?:\/\/\S+/i.test(
+        content
+      )
+    ) {
+
+      await message.delete()
+        .catch(() => {});
+
+      return;
+    }
+
+    // Invites
+
+    if (
+      config.automod.invites &&
+      /discord\.gg\/|discord\.com\/invite\//i.test(
+        content
+      )
+    ) {
+
+      await message.delete()
+        .catch(() => {});
+
+      return;
+    }
+
+    // Mentions
+
+    if (
+      config.automod.mentions &&
+      message.mentions.users.size >=
+        config.automod.maxMentions
+    ) {
+
+      await message.delete()
+        .catch(() => {});
+
+      await message.member
+        .timeout(
+          config.automod.timeout,
+          "Vyne AutoMod: mention spam"
+        )
+        .catch(() => {});
+
+      return;
+    }
+
+    // Bad words
+
+    if (
+      config.automod.badWords &&
+      config.automod.blockedWords.some(
+        word =>
+          content
+            .toLowerCase()
+            .includes(
+              word.toLowerCase()
+            )
+      )
+    ) {
+
+      await message.delete()
+        .catch(() => {});
+
+      return;
+    }
+
+    // Excessive caps
+
+    if (
+      config.automod.caps &&
+      content.length >= 12
+    ) {
+
+      const letters =
+        content.replace(
+          /[^a-z]/gi,
+          ""
+        );
+
+      const uppercase =
+        letters.replace(
+          /[^A-Z]/g,
+          ""
+        );
+
+      if (
+        letters.length >= 8 &&
+        uppercase.length /
+          letters.length >=
+          0.8
+      ) {
+
+        await message.delete()
+          .catch(() => {});
+
         return;
       }
     }
-    if (command === "giveaway") {
-      const sub = interaction.options.getSubcommand();
-      const giveaways = read(DB.giveaways);
-      if (sub === "start") {
-        const minutes = interaction.options.getInteger("minutes");
-        const prize = interaction.options.getString("prize");
-        const endAt = Date.now() + minutes * 60000;
-        const message = await interaction.channel.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(0xffd700)
-              .setTitle("🎉 Giveaway")
-              .setDescription(
-                `**Prize:** ${prize}\n\nReact with 🎉 to enter.\nEnds <t:${Math.floor(endAt / 1000)}:R>`
-              )
-              .setTimestamp(endAt)
-          ]
-        });
-        await message.react("🎉");
-        giveaways[message.id] = {
-          guildId: interaction.guild.id,
-          channelId: interaction.channel.id,
-          prize,
-          endAt,
-          ended: false
-        };
-        write(DB.giveaways, giveaways);
-        return interaction.reply({
-          embeds: [success("Giveaway Started", `Giveaway message: ${message}`)],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const messageId = interaction.options.getString("message_id");
-      const giveaway = giveaways[messageId];
-      if (!giveaway) {
-        return interaction.reply({
-          embeds: [errorEmbed("Giveaway not found.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const channel = interaction.guild.channels.cache.get(giveaway.channelId);
-      const message = await channel?.messages.fetch(messageId).catch(() => null);
-      if (!message) {
-        return interaction.reply({
-          embeds: [errorEmbed("Giveaway message not found.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const reaction = message.reactions.cache.get("🎉");
-      if (!reaction) {
-        return interaction.reply({
-          embeds: [errorEmbed("Nobody entered the giveaway.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const users = await reaction.users.fetch();
-      const eligible = users.filter(u => !u.bot);
-      if (!eligible.size) {
-        return interaction.reply({
-          embeds: [errorEmbed("Nobody entered the giveaway.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const winner = eligible.random();
-      if (sub === "end") {
-        giveaway.ended = true;
-        write(DB.giveaways, giveaways);
-      }
-      return interaction.reply({
-        embeds: [
-          success(
-            sub === "reroll" ? "Giveaway Rerolled" : "Giveaway Ended",
-            `🎉 Winner: ${winner}\n**Prize:** ${giveaway.prize}`
-          )
-        ]
-      });
-    }
-    if (command === "remind") {
-      const durationText = interaction.options.getString("duration");
-      const text = interaction.options.getString("text");
-      const ms = parseDuration(durationText);
-      if (!ms) {
-        return interaction.reply({
-          embeds: [errorEmbed("Invalid duration. Use `10m`, `1h`, `1d`, etc.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const reminders = read(DB.reminders);
-      const id = `${interaction.user.id}-${Date.now()}`;
-      reminders[id] = {
-        userId: interaction.user.id,
-        channelId: interaction.channel.id,
-        guildId: interaction.guild.id,
-        text,
-        executeAt: Date.now() + ms
-      };
-      write(DB.reminders, reminders);
-      return interaction.reply({
-        embeds: [
-          success(
-            "Reminder Created",
-            `I'll remind you in **${formatDuration(ms)}**.`
-          )
-        ],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "notify") {
-      const sub = interaction.options.getSubcommand();
-      const config = getConfig(interaction.guild.id);
-      if (sub === "set") {
-        const channel = interaction.options.getChannel("channel");
-        config.notifications.channelId = channel.id;
-        saveConfig(interaction.guild.id, config);
-        return interaction.reply({
-          embeds: [success("Notifications Set", `Notification channel: ${channel}`)]
-        });
-      }
-      const channel = config.notifications.channelId
-        ? interaction.guild.channels.cache.get(config.notifications.channelId)
-        : null;
-      if (!channel) {
-        return interaction.reply({
-          embeds: [errorEmbed("No notification channel is configured.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      await channel.send({
-        embeds: [success("Vyne Notification Test", "Notifications are working.")]
-      });
-      return interaction.reply({
-        embeds: [success("Notification Sent", `Test sent to ${channel}.`)],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "level" || command === "leaderboard") {
-      const levels = read(DB.levels);
-      const guildData = levels[interaction.guild.id] || {};
-      if (command === "level") {
-        const user =
-          interaction.options.getUser("user") || interaction.user;
-        const data = guildData[user.id] || { xp: 0, level: 0 };
-        return interaction.reply({
-          embeds: [
-            info(
-              "Level",
-              `${user} is **Level ${data.level}** with **${data.xp} XP**.`
-            )
-          ]
-        });
-      }
-      const rows = Object.entries(guildData)
-        .sort((a, b) => (b[1].xp || 0) - (a[1].xp || 0))
-        .slice(0, 10)
-        .map(
-          ([id, data], i) =>
-            `**${i + 1}.** <@${id}> — Level **${data.level || 0}**, XP **${data.xp || 0}**`
-        );
-      return interaction.reply({
-        embeds: [
-          info(
-            "XP Leaderboard",
-            rows.length ? rows.join("\n") : "No XP data yet."
-          )
-        ]
-      });
-    }
-    if (command === "balance") {
-      const user =
-        interaction.options.getUser("user") || interaction.user;
-      const economy = read(DB.economy);
-      economy[interaction.guild.id] ??= {};
-      economy[interaction.guild.id][user.id] ??= {
-        balance: 0,
-        lastDaily: 0
-      };
-      write(DB.economy, economy);
-      return interaction.reply({
-        embeds: [
-          info(
-            "Balance",
-            `${user} has **${economy[interaction.guild.id][user.id].balance}** coins.`
-          )
-        ]
-      });
-    }
-    if (command === "daily") {
-      const economy = read(DB.economy);
-      economy[interaction.guild.id] ??= {};
-      economy[interaction.guild.id][interaction.user.id] ??= {
-        balance: 0,
-        lastDaily: 0
-      };
-      const data = economy[interaction.guild.id][interaction.user.id];
-      if (Date.now() - data.lastDaily < 86400000) {
-        return interaction.reply({
-          embeds: [errorEmbed("You have already claimed your daily reward.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      data.balance += 500;
-      data.lastDaily = Date.now();
-      write(DB.economy, economy);
-      return interaction.reply({
-        embeds: [success("Daily Reward", "You received **500** coins.")]
-      });
-    }
-    if (command === "pay") {
-      const user = interaction.options.getUser("user");
-      const amount = interaction.options.getInteger("amount");
-      if (user.id === interaction.user.id) {
-        return interaction.reply({
-          embeds: [errorEmbed("You cannot pay yourself.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const economy = read(DB.economy);
-      economy[interaction.guild.id] ??= {};
-      economy[interaction.guild.id][interaction.user.id] ??= {
-        balance: 0,
-        lastDaily: 0
-      };
-      economy[interaction.guild.id][user.id] ??= {
-        balance: 0,
-        lastDaily: 0
-      };
-      const sender = economy[interaction.guild.id][interaction.user.id];
-      const receiver = economy[interaction.guild.id][user.id];
-      if (sender.balance < amount) {
-        return interaction.reply({
-          embeds: [errorEmbed("You do not have enough coins.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      sender.balance -= amount;
-      receiver.balance += amount;
-      write(DB.economy, economy);
-      return interaction.reply({
-        embeds: [
-          success("Payment Sent", `Sent **${amount}** coins to ${user}.`)
-        ]
-      });
-    }
-    if (command === "announce") {
-      const message = interaction.options.getString("message");
-      await interaction.channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle("📢 Announcement")
-            .setDescription(message)
-            .setFooter({ text: `By ${interaction.user.tag}` })
-            .setTimestamp()
-        ]
-      });
-      return interaction.reply({
-        embeds: [success("Announcement Sent", "Announcement posted.")],
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    if (command === "sys") {
-      if (!VYNE_OWNER_ID || interaction.user.id !== VYNE_OWNER_ID) {
-        return interaction.reply({
-          embeds: [errorEmbed("Owner only.")],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-      const sub = interaction.options.getSubcommand();
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      try {
-        const deployment = await getVyneDeployment();
-        if (sub === "pull") {
-          const result = await hostingRequest(
-            `/deployments/${deployment.id}/sync`,
-            { method: "POST" }
-          );
-          return interaction.editReply({
-            embeds: [
-              success(
-                "GitHub Pull Requested",
-                `Latest GitHub code was requested for **${deployment.name}**.\n\n\`\`\`json\n${truncate(
-                  JSON.stringify(result, null, 2),
-                  1500
-                )}\n\`\`\``
-              )
-            ]
-          });
-        }
-        if (sub === "restart") {
-          const result = await hostingRequest(
-            `/deployments/${deployment.id}/power`,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                action: "restart",
-                waitSeconds: 10
-              })
-            }
-          );
-          return interaction.editReply({
-            embeds: [
-              success(
-                "Restart Requested",
-                `Vyne restart requested.\n\n\`\`\`json\n${truncate(
-                  JSON.stringify(result, null, 2),
-                  1500
-                )}\n\`\`\``
-              )
-            ]
-          });
-        }
-        if (sub === "status") {
-          const result = await hostingRequest(
-            `/deployments/${deployment.id}/diagnose`
-          );
-          return interaction.editReply({
-            embeds: [
-              info(
-                "Vyne Status",
-                `\`\`\`json\n${truncate(
-                  JSON.stringify(result, null, 2),
-                  1800
-                )}\n\`\`\``
-              )
-            ]
-          });
-        }
-        if (sub === "logs") {
-          const result = await hostingRequest(
-            `/deployments/${deployment.id}/logs?size=1200`
-          );
-          return interaction.editReply({
-            embeds: [
-              info(
-                "Vyne Logs",
-                `\`\`\`\n${truncate(
-                  JSON.stringify(result, null, 2),
-                  1800
-                )}\n\`\`\``
-              )
-            ]
-          });
-        }
-        if (sub === "info") {
-          const result = await hostingRequest(
-            `/deployments/${deployment.id}`
-          );
-          return interaction.editReply({
-            embeds: [
-              info(
-                "Vyne Deployment",
-                `\`\`\`json\n${truncate(
-                  JSON.stringify(result, null, 2),
-                  1800
-                )}\n\`\`\``
-              )
-            ]
-          });
-        }
-      } catch (err) {
-        return interaction.editReply({
-          embeds: [errorEmbed(err.message)]
-        });
-      }
-    }
-  } catch (err) {
-    console.error("Interaction error:", err);
-    const reply = {
-      embeds: [errorEmbed("An unexpected error occurred.")],
-      flags: MessageFlags.Ephemeral
-    };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(reply).catch(() => {});
-    } else {
-      await interaction.reply(reply).catch(() => {});
-    }
-  }
-});
-const spamTracker = new Map();
-const duplicateTracker = new Map();
-const raidTracker = new Map();
-client.on("messageCreate", async message => {
-  if (!message.guild || message.author.bot) return;
-  const config = getConfig(message.guild.id);
-  if (config.leveling.enabled) {
-    const levels = read(DB.levels);
-    levels[message.guild.id] ??= {};
-    levels[message.guild.id][message.author.id] ??= {
-      xp: 0,
-      level: 0
-    };
-    const data = levels[message.guild.id][message.author.id];
-    data.xp += config.leveling.xpPerMessage;
-    const newLevel = Math.floor(data.xp / 100);
-    if (newLevel > data.level) {
-      data.level = newLevel;
-      message.channel.send({
-        embeds: [
-          success(
-            "Level Up",
-            `${message.author} reached **Level ${newLevel}**!`
-          )
-        ]
-      }).catch(() => {});
-    }
-    write(DB.levels, levels);
-  }
-  if (!config.automod.enabled) return;
-  if (isModerator(message.member)) return;
-  const content = message.content || "";
-  const now = Date.now();
-  if (
-    config.automod.antiLinks &&
-    /https?:\/\/\S+/i.test(content)
-  ) {
-    await message.delete().catch(() => {});
-    await message.channel.send({
-      embeds: [
-        warning(
-          "AutoMod",
-          `${message.author}, links are not allowed here.`
-        )
-      ]
-    }).then(m => setTimeout(() => m.delete().catch(() => {}), 5000))
-      .catch(() => {});
-    return;
-  }
-  if (
-    config.automod.antiInvites &&
-    /(discord\.gg|discord\.com\/invite)\/[A-Za-z0-9-]+/i.test(content)
-  ) {
-    await message.delete().catch(() => {});
-    return;
-  }
-  if (
-    config.automod.antiMentionSpam &&
-    message.mentions.users.size >= config.automod.maxMentions
-  ) {
-    await message.delete().catch(() => {});
-    await message.member.timeout(
-      config.automod.timeoutDuration,
-      "Vyne AutoMod mention spam"
-    ).catch(() => {});
-    return;
-  }
-  if (
-    config.automod.badWords &&
-    config.automod.blockedWords.some(word =>
-      content.toLowerCase().includes(word.toLowerCase())
-    )
-  ) {
-    await message.delete().catch(() => {});
-    return;
-  }
-  if (
-    config.automod.excessiveCaps &&
-    content.length >= 12
-  ) {
-    const letters = content.replace(/[^a-z]/gi, "");
-    const upper = letters.replace(/[^A-Z]/g, "");
-    if (letters.length >= 8 && upper.length / letters.length >= 0.8) {
-      await message.delete().catch(() => {});
-      return;
-    }
-  }
-  if (
-    config.automod.massEmoji &&
-    (content.match(/\p{Extended_Pictographic}/gu) || []).length >= 12
-  ) {
-    await message.delete().catch(() => {});
-    return;
-  }
-  if (config.automod.duplicateMessages && content.length > 5) {
-    const key = `${message.guild.id}:${message.author.id}`;
-    const previous = duplicateTracker.get(key);
+
+    // Emoji spam
+
     if (
-      previous &&
-      previous.content === content &&
-      now - previous.time < 10000
+      config.automod.emoji
     ) {
-      await message.delete().catch(() => {});
+
+      const emojiCount =
+        (
+          content.match(
+            /\p{Extended_Pictographic}/gu
+          ) || []
+        ).length;
+
+      if (
+        emojiCount >= 12
+      ) {
+
+        await message.delete()
+          .catch(() => {});
+
+        return;
+      }
+    }
+
+    // Duplicate messages
+
+    if (
+      config.automod.duplicates &&
+      content.length > 5
+    ) {
+
+      const key =
+        `${message.guild.id}:${message.author.id}`;
+
+      const previous =
+        duplicateMap.get(key);
+
+      if (
+        previous &&
+        previous.content ===
+          content &&
+        now -
+          previous.time <
+          10000
+      ) {
+
+        await message.delete()
+          .catch(() => {});
+
+        return;
+      }
+
+      duplicateMap.set(
+        key,
+        {
+          content,
+          time: now
+        }
+      );
+    }
+
+    // Spam
+
+    if (
+      config.automod.spam
+    ) {
+
+      const key =
+        `${message.guild.id}:${message.author.id}`;
+
+      const entries =
+        spamMap.get(key) || [];
+
+      entries.push(now);
+
+      const filtered =
+        entries.filter(
+          timestamp =>
+            now -
+              timestamp <=
+            config.automod.spamWindow
+        );
+
+      spamMap.set(
+        key,
+        filtered
+      );
+
+      if (
+        filtered.length >=
+        config.automod.spamMessages
+      ) {
+
+        await message.member
+          .timeout(
+            config.automod.timeout,
+            "Vyne AutoMod: spam"
+          )
+          .catch(() => {});
+
+        spamMap.delete(
+          key
+        );
+
+        await log(
+          message.guild,
+          warning(
+            "AutoMod • Spam",
+            `${message.author} was automatically timed out for spam.`
+          )
+        );
+      }
+    }
+  }
+);
+
+// ============================================================
+// RAID PROTECTION
+// ============================================================
+
+const joins = new Map();
+
+client.on(
+  "guildMemberAdd",
+  async member => {
+
+    const config =
+      getConfig(
+        member.guild.id
+      );
+
+    if (
+      !config.raid.enabled
+    ) {
       return;
     }
-    duplicateTracker.set(key, {
-      content,
-      time: now
-    });
-  }
-  if (config.automod.antiSpam) {
-    const key = `${message.guild.id}:${message.author.id}`;
-    const arr = spamTracker.get(key) || [];
-    arr.push(now);
-    const filtered = arr.filter(
-      t => now - t <= config.automod.spamWindow
+
+    const now =
+      Date.now();
+
+    const list =
+      joins.get(
+        member.guild.id
+      ) || [];
+
+    list.push(now);
+
+    const filtered =
+      list.filter(
+        time =>
+          now - time <=
+          config.raid.window
+      );
+
+    joins.set(
+      member.guild.id,
+      filtered
     );
-    spamTracker.set(key, filtered);
-    if (filtered.length >= config.automod.spamMessages) {
-      await message.member.timeout(
-        config.automod.timeoutDuration,
-        "Vyne AutoMod spam"
-      ).catch(() => {});
-      spamTracker.delete(key);
-      await sendLog(
-        message.guild,
-        warning(
-          "AutoMod Action",
-          `${message.author} was timed out for spam.`
+
+    if (
+      filtered.length >=
+      config.raid.joinLimit
+    ) {
+
+      await log(
+        member.guild,
+        danger(
+          "Raid Detection",
+          `Detected **${filtered.length} joins** in the configured window.`
         )
       );
     }
   }
-});
-client.on("guildMemberAdd", async member => {
-  const config = getConfig(member.guild.id);
-  if (!config.raid.enabled) return;
-  const now = Date.now();
-  const list = raidTracker.get(member.guild.id) || [];
-  list.push(now);
-  const filtered = list.filter(
-    t => now - t <= config.raid.window
-  );
-  raidTracker.set(member.guild.id, filtered);
-  const accountAge = now - member.user.createdTimestamp;
-  if (accountAge < config.raid.accountAge) {
-    await sendLog(
+);
+
+// ============================================================
+// MEMBER LOGGING
+// ============================================================
+
+client.on(
+  "guildMemberRemove",
+  async member => {
+
+    await log(
       member.guild,
-      warning(
-        "Raid Protection",
-        `${member.user} joined with a young account.`
+      info(
+        "Member Left",
+        `${member.user.tag} left the server.`
       )
     );
   }
-  if (filtered.length >= config.raid.joins) {
-    await sendLog(
-      member.guild,
+);
+
+// ============================================================
+// MESSAGE LOGGING
+// ============================================================
+
+client.on(
+  "messageDelete",
+  async message => {
+
+    if (
+      !message.guild ||
+      message.author?.bot
+    ) {
+      return;
+    }
+
+    await log(
+      message.guild,
       warning(
-        "Raid Detected",
-        `Detected **${filtered.length}** joins within the configured window.`
+        "Message Deleted",
+        [
+          `**Author** ${message.author}`,
+          `**Channel** ${message.channel}`,
+          `**Content** ${truncate(
+            message.content ||
+              "[No content]",
+            700
+          )}`
+        ].join("\n")
       )
     );
-    if (config.raid.lockdown) {
-      const everyone = member.guild.roles.everyone;
-      for (const channel of member.guild.channels.cache.values()) {
-        if (!channel.isTextBased()) continue;
-        channel.permissionOverwrites.edit(everyone, {
-          SendMessages: false
+  }
+);
+
+client.on(
+  "messageUpdate",
+  async (
+    oldMessage,
+    newMessage
+  ) => {
+
+    if (
+      !newMessage.guild ||
+      newMessage.author?.bot ||
+      oldMessage.content ===
+        newMessage.content
+    ) {
+      return;
+    }
+
+    await log(
+      newMessage.guild,
+      info(
+        "Message Edited",
+        [
+          `**Author** ${newMessage.author}`,
+          `**Channel** ${newMessage.channel}`,
+          "",
+          `**Before** ${truncate(
+            oldMessage.content,
+            350
+          )}`,
+          `**After** ${truncate(
+            newMessage.content,
+            350
+          )}`
+        ].join("\n")
+      )
+    );
+  }
+);
+
+// ============================================================
+// VOICE LOGGING
+// ============================================================
+
+client.on(
+  "voiceStateUpdate",
+  async (
+    oldState,
+    newState
+  ) => {
+
+    if (
+      oldState.channelId ===
+      newState.channelId
+    ) {
+      return;
+    }
+
+    const member =
+      newState.member ||
+      oldState.member;
+
+    let description;
+
+    if (
+      !oldState.channelId &&
+      newState.channelId
+    ) {
+      description =
+        `${member.user.tag} joined <#${newState.channelId}>.`;
+    } else if (
+      oldState.channelId &&
+      !newState.channelId
+    ) {
+      description =
+        `${member.user.tag} left <#${oldState.channelId}>.`;
+    } else {
+      description =
+        `${member.user.tag} moved from <#${oldState.channelId}> to <#${newState.channelId}>.`;
+    }
+
+    await log(
+      newState.guild ||
+        oldState.guild,
+      info(
+        "Voice Activity",
+        description
+      )
+    );
+  }
+);
+
+// ============================================================
+// REMINDERS
+// ============================================================
+
+setInterval(
+  async () => {
+
+    const reminders =
+      load(files.reminders);
+
+    let changed =
+      false;
+
+    for (
+      const [
+        id,
+        reminder
+      ] of Object.entries(
+        reminders
+      )
+    ) {
+
+      if (
+        Date.now() <
+        reminder.executeAt
+      ) {
+        continue;
+      }
+
+      const channel =
+        client.channels.cache.get(
+          reminder.channelId
+        );
+
+      if (
+        channel?.isTextBased()
+      ) {
+
+        await channel.send({
+          content:
+            `<@${reminder.userId}>`,
+          embeds: [
+            embed(
+              "Reminder",
+              reminder.text
+            )
+          ]
         }).catch(() => {});
       }
+
+      delete reminders[id];
+
+      changed =
+        true;
     }
-  }
-});
-client.on("guildMemberRemove", async member => {
-  await sendLog(
-    member.guild,
-    info(
-      "Member Left",
-      `${member.user.tag} (${member.id}) left the server.`
-    )
-  );
-});
-client.on("messageDelete", async message => {
-  if (!message.guild || message.author?.bot) return;
-  await sendLog(
-    message.guild,
-    warning(
-      "Message Deleted",
-      `Author: ${message.author || "Unknown"}\nChannel: ${message.channel}\nContent: ${truncate(message.content || "[no content]", 700)}`
-    )
-  );
-});
-client.on("messageUpdate", async (oldMessage, newMessage) => {
-  if (!newMessage.guild || newMessage.author?.bot) return;
-  if (oldMessage.content === newMessage.content) return;
-  await sendLog(
-    newMessage.guild,
-    info(
-      "Message Edited",
-      `Author: ${newMessage.author}\nChannel: ${newMessage.channel}\nBefore: ${truncate(oldMessage.content || "[none]", 400)}\nAfter: ${truncate(newMessage.content || "[none]", 400)}`
-    )
-  );
-});
-client.on("voiceStateUpdate", async (oldState, newState) => {
-  if (oldState.channelId === newState.channelId) return;
-  const member = newState.member || oldState.member;
-  let text;
-  if (!oldState.channelId && newState.channelId) {
-    text = `${member.user.tag} joined <#${newState.channelId}>.`;
-  } else if (oldState.channelId && !newState.channelId) {
-    text = `${member.user.tag} left <#${oldState.channelId}>.`;
-  } else {
-    text = `${member.user.tag} moved from <#${oldState.channelId}> to <#${newState.channelId}>.`;
-  }
-  await sendLog(newState.guild || oldState.guild, info("Voice Update", text));
-});
-setInterval(async () => {
-  const reminders = read(DB.reminders);
-  let changed = false;
-  for (const [id, reminder] of Object.entries(reminders)) {
-    if (Date.now() < reminder.executeAt) continue;
-    const channel = client.channels.cache.get(reminder.channelId);
-    if (channel?.isTextBased()) {
-      await channel.send({
-        content: `<@${reminder.userId}>`,
-        embeds: [
-          info("⏰ Reminder", reminder.text)
-        ]
-      }).catch(() => {});
+
+    if (changed) {
+      save(
+        files.reminders,
+        reminders
+      );
     }
-    delete reminders[id];
-    changed = true;
-  }
-  if (changed) write(DB.reminders, reminders);
-}, 10000);
-setInterval(async () => {
-  const giveaways = read(DB.giveaways);
-  let changed = false;
-  for (const [messageId, giveaway] of Object.entries(giveaways)) {
-    if (giveaway.ended || Date.now() < giveaway.endAt) continue;
-    const guild = client.guilds.cache.get(giveaway.guildId);
-    const channel = guild?.channels.cache.get(giveaway.channelId);
-    const message = await channel?.messages
-      .fetch(messageId)
-      .catch(() => null);
-    if (!message) {
-      giveaway.ended = true;
-      changed = true;
-      continue;
-    }
-    const reaction = message.reactions.cache.get("🎉");
-    if (!reaction) {
-      giveaway.ended = true;
-      changed = true;
-      continue;
-    }
-    const users = await reaction.users.fetch();
-    const eligible = users.filter(u => !u.bot);
-    const winner = eligible.size ? eligible.random() : null;
-    await channel.send({
-      embeds: [
-        success(
-          "Giveaway Ended",
-          winner
-            ? `🎉 Winner: ${winner}\n**Prize:** ${giveaway.prize}`
-            : `Nobody entered.\n**Prize:** ${giveaway.prize}`
-        )
-      ]
-    }).catch(() => {});
-    giveaway.ended = true;
-    changed = true;
-  }
-  if (changed) write(DB.giveaways, giveaways);
-}, 15000);
-function automodMenu() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("vyne_automod_select")
-      .setPlaceholder("Choose an AutoMod module")
-      .addOptions(
-        {
-          label: "Toggle AutoMod",
-          value: "toggle",
-          emoji: "🛡️"
-        },
-        {
-          label: "Anti Spam",
-          value: "spam",
-          emoji: "🚫"
-        },
-        {
-          label: "Anti Links",
-          value: "links",
-          emoji: "🔗"
-        },
-        {
-          label: "Bad Words",
-          value: "words",
-          emoji: "🤬"
-        },
-        {
-          label: "Mention Spam",
-          value: "mentions",
-          emoji: "📢"
-        },
-        {
-          label: "Duplicate Messages",
-          value: "duplicate",
-          emoji: "📋"
-        }
-      )
+
+  },
+  10000
+);
+
+// ============================================================
+// AUTOMOD EMBED
+// ============================================================
+
+function automodEmbed(
+  guildId
+) {
+
+  const config =
+    getConfig(guildId);
+
+  const status =
+    value =>
+      value
+        ? "Enabled"
+        : "Disabled";
+
+  return embed(
+    "Vyne • AutoMod",
+    [
+      `**Master**  ${status(config.automod.enabled)}`,
+      "",
+      `**Anti Spam**  ${status(config.automod.spam)}`,
+      `**Anti Links**  ${status(config.automod.links)}`,
+      `**Anti Invites**  ${status(config.automod.invites)}`,
+      `**Mention Protection**  ${status(config.automod.mentions)}`,
+      `**Duplicate Detection**  ${status(config.automod.duplicates)}`,
+      `**Bad Words**  ${status(config.automod.badWords)}`,
+      "",
+      "Use the menu below to change a module."
+    ].join("\n")
   );
 }
-client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`📌 Client ID: ${CLIENT_ID}`);
-  console.log(`📌 Guild ID: ${GUILD_ID}`);
-  try {
-    const rest = new REST({ version: "10" }).setToken(TOKEN);
-    const registered = await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
+
+// ============================================================
+// READY
+// ============================================================
+
+client.once(
+  "clientReady",
+  async () => {
+
+    console.log(
+      `✅ Logged in as ${client.user.tag}`
     );
-    console.log(`✅ Registered ${registered.length} guild commands.`);
-  } catch (err) {
-    console.error("❌ Command registration failed:", err);
+
+    console.log(
+      `📌 Client ID: ${CLIENT_ID}`
+    );
+
+    console.log(
+      `📌 Guild ID: ${GUILD_ID}`
+    );
+
+    try {
+
+      const rest =
+        new REST({
+          version: "10"
+        }).setToken(
+          DISCORD_TOKEN
+        );
+
+      const registered =
+        await rest.put(
+          Routes.applicationGuildCommands(
+            CLIENT_ID,
+            GUILD_ID
+          ),
+          {
+            body: commands
+          }
+        );
+
+      console.log(
+        `✅ Registered ${registered.length} guild commands.`
+      );
+
+    } catch (error) {
+
+      console.error(
+        "❌ Command registration failed:",
+        error
+      );
+    }
   }
-});
-client.on("error", error => {
-  console.error("Discord client error:", error);
-});
-process.on("unhandledRejection", error => {
-  console.error("Unhandled rejection:", error);
-});
-process.on("uncaughtException", error => {
-  console.error("Uncaught exception:", error);
-});
-client.login(TOKEN).catch(error => {
-  console.error("❌ Discord login failed:", error);
+);
+
+// ============================================================
+// ERROR HANDLING
+// ============================================================
+
+client.on(
+  "error",
+  error => {
+    console.error(
+      "Discord client error:",
+      error
+    );
+  }
+);
+
+process.on(
+  "unhandledRejection",
+  error => {
+    console.error(
+      "Unhandled rejection:",
+      error
+    );
+  }
+);
+
+process.on(
+  "uncaughtException",
+  error => {
+    console.error(
+      "Uncaught exception:",
+      error
+    );
+  }
+);
+
+// ============================================================
+// LOGIN
+// ============================================================
+
+client.login(
+  DISCORD_TOKEN
+).catch(error => {
+
+  console.error(
+    "❌ Discord login failed:"
+  );
+
+  console.error(
+    error
+  );
+
+  process.exit(1);
 });
