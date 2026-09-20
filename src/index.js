@@ -15,6 +15,8 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   ChannelType,
+  AttachmentBuilder,
+  AuditLogEvent,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -57,7 +59,10 @@ const FILES = {
   reminders: path.join(DATA_DIR, "reminders.json"),
   giveaways: path.join(DATA_DIR, "giveaways.json"),
   tickets: path.join(DATA_DIR, "tickets.json"),
-  ai: path.join(DATA_DIR, "ai.json")
+  ai: path.join(DATA_DIR, "ai.json"),
+  premium: path.join(DATA_DIR, "premium.json"),
+  noprefix: path.join(DATA_DIR, "noprefix.json"),
+  analytics: path.join(DATA_DIR, "analytics.json")
 };
 
 const COLORS = {
@@ -104,6 +109,9 @@ const cooldowns = new Collection();
 const spamTracker = new Map();
 const duplicateTracker = new Map();
 const joinTracker = new Map();
+const antinukeTracker = new Map();
+const tempVoiceOwners = new Map();
+const analyticsPending = new Map();
 
 function readJSON(file, fallback = {}) {
   try {
@@ -135,75 +143,175 @@ const db = {
   reminders: readJSON(FILES.reminders, {}),
   giveaways: readJSON(FILES.giveaways, {}),
   tickets: readJSON(FILES.tickets, {}),
-  ai: readJSON(FILES.ai, {})
+  ai: readJSON(FILES.ai, {}),
+  premium: readJSON(FILES.premium, { users: {}, guilds: {} }),
+  noprefix: readJSON(FILES.noprefix, { users: {}, guilds: {} }),
+  analytics: readJSON(FILES.analytics, {})
 };
 
-function ensureGuild(guildId) {
-  if (!db.config[guildId]) {
-    db.config[guildId] = {
-      logChannelId: null,
-      modRoleId: null,
-      verification: {
-        enabled: false,
-        channelId: null,
-        roleId: null,
-        accountAge: 0
-      },
-      tickets: {
-        enabled: false,
-        categoryId: null,
-        staffRoleId: null
-      },
-      notifications: {
-        channelId: null
-      },
-      leveling: {
-        enabled: false,
-        xpPerMessage: 5
-      },
-      economy: {
-        enabled: false
-      },
-      ai: {
-        enabled: Boolean(GEMINI_API_KEY),
-        channelOnly: false,
-        cooldownMs: 8000,
-        maxHistory: 8,
-        systemPrompt: "You are Vyne, a concise, friendly Discord server assistant. Be helpful, safe, and direct. Do not claim to have permissions or perform moderation actions unless the bot actually did them."
-      },
-      automod: {
-        enabled: true,
-        spam: true,
-        links: false,
-        invites: true,
-        mentions: true,
-        duplicates: true,
-        caps: false,
-        badWords: true,
-        emoji: true,
-        botSpam: true,
-        attachment: false,
-        spamMessages: 6,
-        spamWindow: 7000,
-        maxMentions: 5,
-        maxEmoji: 12,
-        maxCapsPercent: 75,
-        blockedWords: ["scamword", "malicious"],
-        blockedDomains: [],
-        timeout: 60000
-      },
-      raid: {
-        enabled: false,
-        joinLimit: 8,
-        window: 10000,
-        accountAge: 86400000,
-        lockdown: false,
-        lockdownChannelId: null
-      },
-      nextCase: 1
-    };
-    writeJSON(FILES.config, db.config);
+function deepMergeDefaults(target, defaults) {
+  let changed = false;
+  for (const [key, value] of Object.entries(defaults)) {
+    if (target[key] === undefined || target[key] === null) {
+      target[key] = structuredClone(value);
+      changed = true;
+      continue;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value) &&
+        typeof target[key] === "object" && !Array.isArray(target[key])) {
+      if (deepMergeDefaults(target[key], value)) changed = true;
+    }
   }
+  return changed;
+}
+
+function defaultGuildConfig() {
+  return {
+    logChannelId: null,
+    modRoleId: null,
+    verification: {
+      enabled: false,
+      channelId: null,
+      roleId: null,
+      accountAge: 0
+    },
+    tickets: {
+      enabled: false,
+      categoryId: null,
+      staffRoleId: null,
+      premium: {
+        panelTitle: "Vyne Support Center",
+        panelDescription: "Need help? Open a private support ticket and our staff will assist you.",
+        buttonLabel: "Create Ticket",
+        buttonEmoji: "🎫",
+        panelImage: null,
+        categories: [
+          { id: "general", name: "General Support", description: "General questions or support.", emoji: "🎫" }
+        ],
+        questions: [],
+        claimEnabled: true,
+        closeReasonRequired: false,
+        transcriptEnabled: true,
+        transcriptChannelId: null,
+        autoCloseMs: 0,
+        maxOpenPerUser: 1,
+        advancedEnabled: false
+      }
+    },
+    notifications: {
+      channelId: null,
+      feeds: []
+    },
+    leveling: {
+      enabled: false,
+      xpPerMessage: 5
+    },
+    economy: {
+      enabled: false
+    },
+    ai: {
+      enabled: Boolean(GEMINI_API_KEY),
+      channelOnly: false,
+      cooldownMs: 8000,
+      maxHistory: 8,
+      systemPrompt: "You are Vyne, a concise, friendly Discord server assistant. Be helpful, safe, and direct. Do not claim to have permissions or perform moderation actions unless the bot actually did them."
+    },
+    automod: {
+      enabled: true,
+      spam: true,
+      links: false,
+      invites: true,
+      mentions: true,
+      duplicates: true,
+      caps: false,
+      badWords: true,
+      emoji: true,
+      botSpam: true,
+      attachment: false,
+      spamMessages: 6,
+      spamWindow: 7000,
+      maxMentions: 5,
+      maxEmoji: 12,
+      maxCapsPercent: 75,
+      blockedWords: ["scamword", "malicious"],
+      blockedDomains: [],
+      timeout: 60000
+    },
+    raid: {
+      enabled: false,
+      joinLimit: 8,
+      window: 10000,
+      accountAge: 86400000,
+      lockdown: false,
+      lockdownChannelId: null
+    },
+    antinuke: {
+      enabled: false,
+      premiumAdvanced: false,
+      window: 10000,
+      action: "timeout",
+      timeoutMs: 15 * 60 * 1000,
+      lockdownOnTrigger: true,
+      alertChannelId: null,
+      whitelistUserIds: [],
+      whitelistRoleIds: [],
+      rules: {
+        channelDelete: true,
+        channelCreate: false,
+        roleDelete: true,
+        roleCreate: false,
+        roleUpdate: false,
+        massBan: true,
+        massKick: true,
+        webhooks: true,
+        permissionChanges: false,
+        botAdd: true
+      },
+      thresholds: {
+        channelDelete: 3,
+        channelCreate: 6,
+        roleDelete: 3,
+        roleCreate: 6,
+        roleUpdate: 5,
+        massBan: 3,
+        massKick: 3,
+        webhooks: 4,
+        permissionChanges: 3,
+        botAdd: 2
+      }
+    },
+    welcome: {
+      enabled: false,
+      advanced: false,
+      channelId: null,
+      message: "Welcome to **{server}**, {user}! You are member **#{membercount}**.",
+      title: "Welcome to {server}",
+      imageUrl: null,
+      color: COLORS.primary,
+      autoRoleId: null,
+      deleteAfterMs: 0,
+      goodbyeEnabled: false,
+      goodbyeChannelId: null,
+      goodbyeMessage: "{user} has left **{server}**."
+    },
+    voicemaster: {
+      enabled: false,
+      categoryId: null,
+      hubChannelId: null,
+      controlChannelId: null,
+      limitDefault: 0
+    },
+    analytics: {
+      enabled: false
+    },
+    nextCase: 1
+  };
+}
+
+function ensureGuild(guildId) {
+  if (!db.config[guildId]) db.config[guildId] = defaultGuildConfig();
+  const changed = deepMergeDefaults(db.config[guildId], defaultGuildConfig());
+  if (changed) writeJSON(FILES.config, db.config);
   return db.config[guildId];
 }
 
@@ -312,12 +420,30 @@ function canBotManageRole(guild, role) {
 
 async function safeReply(interaction, payload) {
   try {
-    if (interaction.replied || interaction.deferred) return interaction.followUp(payload);
+    if (interaction.deferred) {
+      const editPayload = { ...payload };
+      delete editPayload.flags;
+      return interaction.editReply(editPayload);
+    }
+    if (interaction.replied) return interaction.followUp(payload);
     return interaction.reply(payload);
-  } catch {
+  } catch (err) {
+    console.error("safeReply error:", err?.message || err);
     return null;
   }
 }
+
+async function deferOnce(interaction, flags = undefined) {
+  if (interaction.replied || interaction.deferred) return;
+  if (flags === undefined) return interaction.deferReply();
+  return interaction.deferReply({ flags });
+}
+
+function truncate(text, max = 3900) {
+  const value = String(text ?? "");
+  return value.length > max ? value.slice(0, max - 3) + "..." : value;
+}
+
 
 async function logAction(guild, title, description, color = COLORS.info, fields = []) {
   const cfg = getGuildData(guild.id);
@@ -453,7 +579,265 @@ async function hostingDiagnose() {
 }
 
 function ownerOnly(interaction) {
-  return !VYNE_OWNER_ID || interaction.user.id === VYNE_OWNER_ID;
+  return Boolean(VYNE_OWNER_ID && interaction.user.id === VYNE_OWNER_ID);
+}
+
+const PLAN_DEFINITIONS = {
+  "7d": { label: "🥉 7 Days", duration: "7 Days", ms: 7 * 86400000 },
+  "30d": { label: "🥈 30 Days", duration: "30 Days", ms: 30 * 86400000 },
+  "90d": { label: "🥇 90 Days", duration: "90 Days", ms: 90 * 86400000 },
+  "1y": { label: "💎 1 Year", duration: "1 Year", ms: 365 * 86400000 },
+  lifetime: { label: "♾️ Lifetime", duration: "Lifetime", ms: null }
+};
+
+function cleanSubscriptions(store, file) {
+  let changed = false;
+  for (const scope of ["users", "guilds"]) {
+    for (const [id, record] of Object.entries(store[scope] || {})) {
+      if (record && record.expiresAt !== null && Number(record.expiresAt) <= Date.now()) {
+        delete store[scope][id];
+        changed = true;
+      }
+    }
+  }
+  if (changed) writeJSON(file, store);
+  return changed;
+}
+
+function hasSubscription(store, userId, guildId) {
+  const user = store.users?.[userId];
+  if (user && (user.expiresAt === null || Number(user.expiresAt) > Date.now())) return true;
+  const guild = guildId ? store.guilds?.[guildId] : null;
+  return Boolean(guild && (guild.expiresAt === null || Number(guild.expiresAt) > Date.now()));
+}
+
+function premiumActive(userId, guildId) {
+  cleanSubscriptions(db.premium, FILES.premium);
+  return hasSubscription(db.premium, userId, guildId);
+}
+
+function noPrefixActive(userId, guildId) {
+  cleanSubscriptions(db.noprefix, FILES.noprefix);
+  return hasSubscription(db.noprefix, userId, guildId);
+}
+
+function grantSubscription(store, file, scope, id, planKey, grantedBy) {
+  const plan = PLAN_DEFINITIONS[planKey];
+  if (!plan) throw new Error("Invalid plan.");
+  const grantedAt = Date.now();
+  store[scope][id] = {
+    plan: planKey,
+    grantedAt,
+    expiresAt: plan.ms === null ? null : grantedAt + plan.ms,
+    grantedBy
+  };
+  writeJSON(file, store);
+  return store[scope][id];
+}
+
+function revokeSubscription(store, file, scope, id) {
+  const had = Boolean(store[scope]?.[id]);
+  if (store[scope]) delete store[scope][id];
+  if (had) writeJSON(file, store);
+  return had;
+}
+
+function getSubscription(store, scope, id) {
+  cleanSubscriptions(store, store === db.premium ? FILES.premium : FILES.noprefix);
+  return store[scope]?.[id] || null;
+}
+
+function subscriptionText(record) {
+  if (!record) return "Not active";
+  const plan = PLAN_DEFINITIONS[record.plan];
+  return `**${plan?.label || record.plan}**\nGranted: ${fmtDate(record.grantedAt)}\nExpires: ${record.expiresAt === null ? "♾️ Never" : fmtDate(record.expiresAt)}`;
+}
+
+function planMenu(customId, placeholder, prefix = "premium") {
+  return new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder(placeholder)
+    .addOptions(Object.entries(PLAN_DEFINITIONS).map(([value, plan]) => ({
+      label: plan.label.replace(/^\S+ /, ""),
+      value,
+      description: `${prefix === "premium" ? "All Premium features" : "Full no-prefix access"} • ${plan.duration}`,
+      emoji: plan.label.match(/^\S+/)?.[0] || "•"
+    })));
+}
+
+function ownerGuardEmbed() {
+  return errorEmbed("Owner only", "This management command can only be used by the configured Vyne owner.");
+}
+
+function requirePremium(interaction) {
+  if (premiumActive(interaction.user.id, interaction.guildId)) return true;
+  return safeReply(interaction, {
+    embeds: [embed("◆ Premium Required", "This advanced feature is available with **Vyne Premium**.\n\nAll Premium plans unlock the same Premium features; only the subscription duration changes.", COLORS.primary)],
+    flags: MessageFlags.Ephemeral
+  });
+}
+
+function premiumStatusFor(userId, guildId) {
+  const user = getSubscription(db.premium, "users", userId);
+  const guild = guildId ? getSubscription(db.premium, "guilds", guildId) : null;
+  if (user) return { scope: "User", record: user };
+  if (guild) return { scope: "Server", record: guild };
+  return null;
+}
+
+function noPrefixStatusFor(userId, guildId) {
+  const user = getSubscription(db.noprefix, "users", userId);
+  const guild = guildId ? getSubscription(db.noprefix, "guilds", guildId) : null;
+  if (user) return { scope: "User", record: user };
+  if (guild) return { scope: "Server", record: guild };
+  return null;
+}
+
+function substituteVars(template, member) {
+  const server = member.guild;
+  return String(template || "")
+    .replaceAll("{user}", `<@${member.id}>`)
+    .replaceAll("{username}", member.user.username)
+    .replaceAll("{server}", server.name)
+    .replaceAll("{membercount}", String(server.memberCount))
+    .replaceAll("{account_age}", fmtDuration(Date.now() - member.user.createdTimestamp));
+}
+
+function analyticsFor(guildId) {
+  if (!db.analytics[guildId]) db.analytics[guildId] = { messages: 0, joins: 0, leaves: 0, commands: 0, lastUpdated: Date.now() };
+  return db.analytics[guildId];
+}
+
+function trackAnalytics(guildId, key, amount = 1) {
+  const a = analyticsFor(guildId);
+  a[key] = Number(a[key] || 0) + amount;
+  a.lastUpdated = Date.now();
+  const pending = (analyticsPending.get(guildId) || 0) + 1;
+  analyticsPending.set(guildId, pending);
+  if (pending >= 25) {
+    writeJSON(FILES.analytics, db.analytics);
+    analyticsPending.set(guildId, 0);
+  }
+}
+
+
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+async function fetchNotificationFeed(feed) {
+  const source = String(feed?.url || "").trim();
+  if (!source) throw new Error("Feed URL is empty.");
+
+  if (feed.type === "youtube") {
+    let feedUrl = source;
+    const channelMatch = source.match(/youtube\.com\/channel\/([A-Za-z0-9_-]+)/i);
+    const rawIdMatch = source.match(/^(UC[A-Za-z0-9_-]{10,})$/i);
+
+    if (channelMatch) {
+      feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelMatch[1]}`;
+    } else if (rawIdMatch) {
+      feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${rawIdMatch[1]}`;
+    } else if (!/feeds\/videos\.xml/i.test(source)) {
+      const page = await fetch(source, {
+        headers: { "User-Agent": "VyneModeration/1.0" }
+      });
+      if (!page.ok) throw new Error(`YouTube returned HTTP ${page.status}.`);
+      const html = await page.text();
+      const idMatch =
+        html.match(/"channelId"\s*:\s*"(UC[A-Za-z0-9_-]{20,})"/) ||
+        html.match(/<meta[^>]+itemprop=["']channelId["'][^>]+content=["'](UC[A-Za-z0-9_-]{20,})/i);
+      if (!idMatch) throw new Error("Could not find a YouTube channel ID in that URL.");
+      feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${idMatch[1]}`;
+    }
+
+    const res = await fetch(feedUrl, {
+      headers: { "User-Agent": "VyneModeration/1.0" }
+    });
+    if (!res.ok) throw new Error(`YouTube feed returned HTTP ${res.status}.`);
+    const xml = await res.text();
+
+    const id =
+      (xml.match(/<yt:videoId>([^<]+)<\/yt:videoId>/i) || [])[1] ||
+      (xml.match(/<id>tag:youtube\.com,2008:video:([^<]+)<\/id>/i) || [])[1];
+    const title = (xml.match(/<entry>[\s\S]*?<title>([^<]+)<\/title>/i) || [])[1] || "New YouTube video";
+    const link = (xml.match(/<entry>[\s\S]*?<link[^>]+href="([^"]+)"/i) || [])[1] || source;
+
+    if (!id) throw new Error("No YouTube video was found in the feed.");
+    return { id, title: decodeXml(title), link };
+  }
+
+  if (feed.type === "reddit") {
+    let jsonUrl = source;
+    const subredditMatch = source.match(/reddit\.com\/r\/([A-Za-z0-9_+-]+)/i);
+    if (subredditMatch && !/\.json(?:$|\?)/i.test(source)) {
+      jsonUrl = `https://www.reddit.com/r/${subredditMatch[1]}/new.json?limit=1`;
+    }
+
+    const res = await fetch(jsonUrl, {
+      headers: { "User-Agent": "VyneModeration/1.0 (Discord bot feed reader)" }
+    });
+    if (!res.ok) throw new Error(`Reddit returned HTTP ${res.status}.`);
+    const data = await res.json();
+    const item = data?.data?.children?.[0]?.data;
+    if (!item?.id) throw new Error("No Reddit post was found in the feed.");
+
+    return {
+      id: item.name || item.id,
+      title: item.title || "New Reddit post",
+      link: item.permalink ? `https://www.reddit.com${item.permalink}` : source
+    };
+  }
+
+  throw new Error("Unsupported notification feed type.");
+}
+
+async function pollNotificationFeeds() {
+  for (const guild of client.guilds.cache.values()) {
+    const cfg = getGuildData(guild.id);
+    if (!Array.isArray(cfg.notifications.feeds) || !cfg.notifications.feeds.length) continue;
+
+    let changed = false;
+    for (const feed of cfg.notifications.feeds) {
+      try {
+        const item = await fetchNotificationFeed(feed);
+        if (!item?.id) continue;
+
+        if (!feed.lastItemId) {
+          feed.lastItemId = item.id;
+          changed = true;
+          continue;
+        }
+
+        if (feed.lastItemId === item.id) continue;
+
+        const channel = guild.channels.cache.get(feed.channelId);
+        if (channel?.isTextBased()) {
+          await channel.send({
+            embeds: [
+              embed(
+                `${feed.type === "youtube" ? "▶️" : "🔴"} New ${feed.type === "youtube" ? "YouTube" : "Reddit"} post`,
+                `**${truncate(item.title, 300)}**\n\n[Open post](${item.link})`,
+                COLORS.info
+              )
+            ]
+          }).catch(() => {});
+        }
+
+        feed.lastItemId = item.id;
+        changed = true;
+      } catch (err) {
+        console.error(`Notification feed ${feed.id} error:`, err?.message || err);
+      }
+    }
+
+    if (changed) writeJSON(FILES.config, db.config);
+  }
 }
 
 
@@ -604,9 +988,9 @@ async function handleAICommand(interaction) {
 }
 
 const commands = [
-  new SlashCommandBuilder().setName("help").setDescription("Open Vyne's interactive help center."),
+  new SlashCommandBuilder().setName("help").setDescription("Open Vyne's clean interactive help center."),
   new SlashCommandBuilder().setName("ping").setDescription("Check Vyne's latency."),
-  new SlashCommandBuilder().setName("botstats").setDescription("View Vyne's bot, process and hosting statistics."),
+  new SlashCommandBuilder().setName("botstats").setDescription("View Vyne bot, process and hosting statistics."),
   new SlashCommandBuilder().setName("ask").setDescription("Ask Vyne AI a question.")
     .addStringOption(o => o.setName("prompt").setDescription("Your question or request.").setRequired(true)),
   new SlashCommandBuilder().setName("ai").setDescription("Configure Vyne AI.")
@@ -614,7 +998,6 @@ const commands = [
     .addSubcommand(s => s.setName("disable").setDescription("Disable AI for this server."))
     .addSubcommand(s => s.setName("status").setDescription("View AI configuration."))
     .addSubcommand(s => s.setName("clear").setDescription("Clear your AI conversation history.")),
-
 
   new SlashCommandBuilder().setName("ban").setDescription("Ban a member.")
     .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true))
@@ -686,6 +1069,7 @@ const commands = [
     .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true)),
 
   new SlashCommandBuilder().setName("automod").setDescription("Open Vyne's AutoMod control panel."),
+  new SlashCommandBuilder().setName("automodpro").setDescription("Open advanced AutoMod settings • 💎 Premium."),
   new SlashCommandBuilder().setName("raid").setDescription("Configure raid protection.")
     .addSubcommand(s => s.setName("on").setDescription("Enable raid protection."))
     .addSubcommand(s => s.setName("off").setDescription("Disable raid protection."))
@@ -695,11 +1079,53 @@ const commands = [
       .addRoleOption(o => o.setName("role").setDescription("Role granted after verification.").setRequired(true))
       .addIntegerOption(o => o.setName("account_age_days").setDescription("Minimum account age in days.").setMinValue(0).setMaxValue(3650)))
     .addSubcommand(s => s.setName("disable").setDescription("Disable verification.")),
-  new SlashCommandBuilder().setName("ticket").setDescription("Ticket system.")
-    .addSubcommand(s => s.setName("setup").setDescription("Configure tickets.")
+
+  new SlashCommandBuilder().setName("antinuke").setDescription("Open the Anti-Nuke setup panel."),
+  new SlashCommandBuilder().setName("antinukewhitelist").setDescription("Manage trusted Anti-Nuke users • 💎 Premium.")
+    .addSubcommand(s => s.setName("add").setDescription("Whitelist a user • 💎 Premium.")
+      .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a user • 💎 Premium.")
+      .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+    .addSubcommand(s => s.setName("list").setDescription("View the Anti-Nuke whitelist • 💎 Premium.")),
+
+  new SlashCommandBuilder().setName("ticket").setDescription("Vyne ticket system.")
+    .addSubcommand(s => s.setName("setup").setDescription("Configure the free ticket system.")
       .addRoleOption(o => o.setName("staff_role").setDescription("Staff role").setRequired(true)))
-    .addSubcommand(s => s.setName("panel").setDescription("Send ticket panel."))
-    .addSubcommand(s => s.setName("close").setDescription("Close the current ticket.")),
+    .addSubcommand(s => s.setName("panel").setDescription("Send the ticket panel."))
+    .addSubcommand(s => s.setName("close").setDescription("Close the current ticket."))
+    .addSubcommand(s => s.setName("builder").setDescription("Open the fully customizable ticket builder • 💎 Premium.")),
+
+  new SlashCommandBuilder().setName("welcome").setDescription("Configure Vyne's welcome system.")
+    .addSubcommand(s => s.setName("setup").setDescription("Set up the basic free welcome system.")
+      .addChannelOption(o => o.setName("channel").setDescription("Welcome channel").setRequired(true))
+      .addStringOption(o => o.setName("message").setDescription("Optional welcome message.")))
+    .addSubcommand(s => s.setName("advanced").setDescription("Customize welcome cards and onboarding • 💎 Premium."))
+    .addSubcommand(s => s.setName("preview").setDescription("Preview advanced welcome • 💎 Premium."))
+    .addSubcommand(s => s.setName("disable").setDescription("Disable welcome messages.")),
+
+  new SlashCommandBuilder().setName("voicemaster").setDescription("Temporary voice rooms • 💎 Premium.")
+    .addSubcommand(s => s.setName("setup").setDescription("Configure the temporary voice hub • 💎 Premium.")
+      .addChannelOption(o => o.setName("hub").setDescription("Existing voice hub"))
+      .addChannelOption(o => o.setName("category").setDescription("Category for temporary rooms"))
+      .addChannelOption(o => o.setName("control_channel").setDescription("Text channel for instructions")))
+    .addSubcommand(s => s.setName("panel").setDescription("View VoiceMaster controls • 💎 Premium."))
+    .addSubcommand(s => s.setName("rename").setDescription("Rename your temporary room • 💎 Premium.")
+      .addStringOption(o => o.setName("name").setDescription("New name").setRequired(true)))
+    .addSubcommand(s => s.setName("limit").setDescription("Set your room user limit • 💎 Premium.")
+      .addIntegerOption(o => o.setName("users").setDescription("0-99").setMinValue(0).setMaxValue(99).setRequired(true)))
+    .addSubcommand(s => s.setName("lock").setDescription("Lock your temporary room • 💎 Premium."))
+    .addSubcommand(s => s.setName("unlock").setDescription("Unlock your temporary room • 💎 Premium."))
+    .addSubcommand(s => s.setName("claim").setDescription("Claim an abandoned room • 💎 Premium."))
+    .addSubcommand(s => s.setName("delete").setDescription("Delete your temporary room • 💎 Premium.")),
+
+  new SlashCommandBuilder().setName("analytics").setDescription("View advanced server analytics • 💎 Premium."),
+  new SlashCommandBuilder().setName("poll").setDescription("Create a quick reaction poll.")
+    .addStringOption(o => o.setName("question").setDescription("Poll question").setRequired(true))
+    .addStringOption(o => o.setName("option1").setDescription("Option 1").setRequired(true))
+    .addStringOption(o => o.setName("option2").setDescription("Option 2").setRequired(true))
+    .addStringOption(o => o.setName("option3").setDescription("Option 3"))
+    .addStringOption(o => o.setName("option4").setDescription("Option 4"))
+    .addStringOption(o => o.setName("option5").setDescription("Option 5")),
 
   new SlashCommandBuilder().setName("announce").setDescription("Send a formatted announcement.")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
@@ -708,10 +1134,19 @@ const commands = [
   new SlashCommandBuilder().setName("remind").setDescription("Create a reminder.")
     .addStringOption(o => o.setName("time").setDescription("e.g. 10m, 2h, 1d").setRequired(true))
     .addStringOption(o => o.setName("message").setDescription("Reminder").setRequired(true)),
-  new SlashCommandBuilder().setName("notify").setDescription("Configure notification channel.")
+  new SlashCommandBuilder().setName("notify").setDescription("Configure notifications.")
     .addSubcommand(s => s.setName("set").setDescription("Set notification channel.")
       .addChannelOption(o => o.setName("channel").setDescription("Channel").setRequired(true)))
-    .addSubcommand(s => s.setName("test").setDescription("Send a test notification.")),
+    .addSubcommand(s => s.setName("test").setDescription("Send a test notification."))
+    .addSubcommand(s => s.setName("youtube").setDescription("Watch a YouTube feed • 💎 Premium.")
+      .addStringOption(o => o.setName("url").setDescription("YouTube channel URL or feed URL").setRequired(true))
+      .addChannelOption(o => o.setName("channel").setDescription("Notification channel").setRequired(true)))
+    .addSubcommand(s => s.setName("reddit").setDescription("Watch a Reddit feed • 💎 Premium.")
+      .addStringOption(o => o.setName("url").setDescription("Subreddit URL or JSON feed URL").setRequired(true))
+      .addChannelOption(o => o.setName("channel").setDescription("Notification channel").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a feed • 💎 Premium.")
+      .addStringOption(o => o.setName("id").setDescription("Feed ID").setRequired(true)))
+    .addSubcommand(s => s.setName("list").setDescription("List feeds • 💎 Premium.")),
 
   new SlashCommandBuilder().setName("level").setDescription("View your level.")
     .addUserOption(o => o.setName("user").setDescription("User")),
@@ -722,7 +1157,6 @@ const commands = [
   new SlashCommandBuilder().setName("pay").setDescription("Pay another user.")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
     .addIntegerOption(o => o.setName("amount").setDescription("Amount").setMinValue(1).setRequired(true)),
-
   new SlashCommandBuilder().setName("giveaway").setDescription("Manage giveaways.")
     .addSubcommand(s => s.setName("start").setDescription("Start a giveaway.")
       .addIntegerOption(o => o.setName("duration").setDescription("Duration in seconds.").setMinValue(10).setRequired(true))
@@ -739,14 +1173,52 @@ const commands = [
   new SlashCommandBuilder().setName("modrole").setDescription("Set the moderation role.")
     .addRoleOption(o => o.setName("role").setDescription("Role").setRequired(true)),
 
-  new SlashCommandBuilder().setName("sys").setDescription("Vyne hosting controls.")
+  new SlashCommandBuilder().setName("premium").setDescription("Manage Premium subscriptions • Owner only.")
+    .addSubcommandGroup(g => g.setName("user").setDescription("Manage user Premium.")
+      .addSubcommand(s => s.setName("add").setDescription("Grant all Premium features; choose duration.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("remove").setDescription("Revoke a user's Premium.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("status").setDescription("View a user's Premium.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("list").setDescription("List Premium users.")))
+    .addSubcommandGroup(g => g.setName("server").setDescription("Manage server Premium.")
+      .addSubcommand(s => s.setName("add").setDescription("Grant all Premium features; choose duration.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("remove").setDescription("Revoke server Premium.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("status").setDescription("View server Premium.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("list").setDescription("List Premium servers.")))
+    .addSubcommand(s => s.setName("status").setDescription("View Premium status here.")),
+
+  new SlashCommandBuilder().setName("noprefix").setDescription("Manage No-Prefix subscriptions • Owner only.")
+    .addSubcommandGroup(g => g.setName("user").setDescription("Manage user No-Prefix.")
+      .addSubcommand(s => s.setName("add").setDescription("Grant no-prefix; choose duration.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("remove").setDescription("Revoke a user's No-Prefix.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("status").setDescription("View a user's No-Prefix.")
+        .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)))
+      .addSubcommand(s => s.setName("list").setDescription("List No-Prefix users.")))
+    .addSubcommandGroup(g => g.setName("server").setDescription("Manage server No-Prefix.")
+      .addSubcommand(s => s.setName("add").setDescription("Grant no-prefix; choose duration.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("remove").setDescription("Revoke server No-Prefix.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("status").setDescription("View server No-Prefix.")
+        .addStringOption(o => o.setName("server_id").setDescription("Optional server ID; defaults to this server.")))
+      .addSubcommand(s => s.setName("list").setDescription("List No-Prefix servers.")))
+    .addSubcommand(s => s.setName("status").setDescription("View No-Prefix status here.")),
+
+  new SlashCommandBuilder().setName("sys").setDescription("Vyne hosting controls • Owner only.")
     .addSubcommand(s => s.setName("status").setDescription("View live hosting resources."))
     .addSubcommand(s => s.setName("info").setDescription("View deployment information."))
     .addSubcommand(s => s.setName("diagnose").setDescription("Diagnose the deployment."))
     .addSubcommand(s => s.setName("logs").setDescription("Search deployment logs.")
-      .addStringOption(o => o.setName("pattern").setDescription("Word or regex").setRequired(false)))
-    .addSubcommand(s => s.setName("pull").setDescription("Pull the latest GitHub code."))
-    .addSubcommand(s => s.setName("restart").setDescription("Restart Vyne."))
+      .addStringOption(o => o.setName("pattern").setDescription("Word or regex")))
+    .addSubcommand(s => s.setName("pull").setDescription("Pull GitHub code and restart."))
+    .addSubcommand(s => s.setName("restart").setDescription("Restart Vyne after an immediate acknowledgement."))
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -755,95 +1227,154 @@ async function registerCommands() {
   console.log(`✅ Registered ${commands.length} guild commands.`);
 }
 
-async function sendHelp(interaction, page = "home") {
+function helpPayload(page = "home") {
   const pages = {
     home: {
-      title: "✦ Vyne",
-      desc: "A clean moderation, security and community system built for Discord.",
+      title: "✦ Vyne Help Center",
+      desc: "A clean, friendly control center for moderation, security and community tools.",
       color: COLORS.primary,
       fields: [
         { name: "🛡️ Moderation", value: "`/ban` `/kick` `/timeout` `/warn` `/purge` `/lock` `/role`", inline: false },
-        { name: "🔐 Security", value: "`/automod` `/raid` `/verify`", inline: false },
-        { name: "🎫 Community", value: "`/ticket` `/announce` `/remind` `/notify`", inline: false },
-        { name: "🌐 Information", value: "`/userinfo` `/serverinfo` `/roles` `/botstats`", inline: false },
-        { name: "⭐ Economy", value: "`/level` `/leaderboard` `/balance` `/daily` `/pay` `/giveaway`", inline: false },
-        { name: "🤖 AI", value: "`/ask` `/ai status` `/ai enable` `/ai disable` `/ai clear`", inline: false },
-        { name: "⚙️ System", value: "`/config` `/logchannel` `/modrole` `/sys`", inline: false }
+        { name: "☢️ Security", value: "`/automod` `/antinuke` `/raid` `/verify`", inline: false },
+        { name: "🎫 Community", value: "`/ticket` `/welcome` `/voicemaster` `/giveaway` `/poll`", inline: false },
+        { name: "📊 Tools", value: "`/analytics` `/level` `/leaderboard` `/balance` `/daily` `/pay` `/remind`", inline: false },
+        { name: "◆ Premium", value: "Advanced customization and controls. Every Premium plan unlocks the same features; only duration changes.", inline: false },
+        { name: "⚡ No-Prefix", value: "Separate access system for running supported commands without a prefix.", inline: false }
       ]
     },
     moderation: {
       title: "🛡️ Moderation",
-      desc: "Professional moderation tools with case IDs and audit logging.",
+      desc: "Punishments, warnings, cleanup and role management.",
       color: COLORS.danger,
       fields: [
         { name: "Punishments", value: "`/ban` `/unban` `/kick` `/timeout` `/untimeout` `/mute` `/unmute` `/softban`", inline: false },
         { name: "Warnings", value: "`/warn` `/warnings` `/clearwarnings`", inline: false },
-        { name: "Channel", value: "`/purge` `/lock` `/unlock` `/slowmode`", inline: false },
+        { name: "Channels", value: "`/purge` `/lock` `/unlock` `/slowmode`", inline: false },
         { name: "Roles", value: "`/role add` `/role remove` `/role create` `/nick`", inline: false }
       ]
     },
     security: {
-      title: "🔐 Security",
-      desc: "Server protection and verification controls.",
+      title: "☢️ Security",
+      desc: "Layered protection for everyday moderation and advanced server defense.",
+      color: COLORS.danger,
+      fields: [
+        { name: "AutoMod", value: "`/automod` — basic controls\\n`/automodpro` — thresholds, blocked words and domains • 💎 Premium", inline: false },
+        { name: "Anti-Nuke", value: "`/antinuke` — interactive setup panel\\nAdvanced rules, thresholds and controls are marked 💎 Premium", inline: false },
+        { name: "Raid", value: "`/raid on` `/raid off` `/raid status`", inline: false },
+        { name: "Verification", value: "`/verify setup` `/verify disable`", inline: false }
+      ]
+    },
+    tickets: {
+      title: "🎫 Tickets",
+      desc: "A free ready-made ticket system plus a full Premium customization layer.",
+      color: COLORS.primary,
+      fields: [
+        { name: "Free", value: "`/ticket setup` → staff role\\n`/ticket panel` → pre-made panel\\n`/ticket close` → close ticket", inline: false },
+        { name: "◆ Premium", value: "`/ticket builder` → custom panel, categories, questions, claim, close reason, transcripts, limits and more • 💎 Premium", inline: false }
+      ]
+    },
+    welcome: {
+      title: "👋 Welcome",
+      desc: "Simple free welcomes or a fully customized Premium onboarding experience.",
+      color: COLORS.success,
+      fields: [
+        { name: "Free", value: "`/welcome setup` and `/welcome disable`", inline: false },
+        { name: "◆ Premium", value: "`/welcome advanced` and `/welcome preview` • custom message, title, image, color and auto-delete", inline: false }
+      ]
+    },
+    voicemaster: {
+      title: "🎙️ VoiceMaster",
+      desc: "Temporary personal voice channels with owner controls • 💎 Premium.",
+      color: COLORS.cyan,
+      fields: [
+        { name: "Setup", value: "`/voicemaster setup` and `/voicemaster panel` • 💎 Premium", inline: false },
+        { name: "Controls", value: "`/voicemaster rename` `/limit` `/lock` `/unlock` `/claim` `/delete` • 💎 Premium", inline: false }
+      ]
+    },
+    analytics: {
+      title: "📊 Analytics",
+      desc: "Server activity and moderation insights • 💎 Premium.",
       color: COLORS.info,
       fields: [
-        { name: "AutoMod", value: "`/automod` — spam, links, invites, mentions, duplicates, caps, words, emoji and attachments.", inline: false },
-        { name: "Raid", value: "`/raid on` `/raid off` `/raid status` — join-rate and account-age protection.", inline: false },
-        { name: "Verification", value: "`/verify setup` `/verify disable` — role-based verification with account-age checks.", inline: false }
+        { name: "Analytics", value: "`/analytics` • messages, commands, joins, leaves, cases, warnings, members and channels • 💎 Premium", inline: false },
+        { name: "Levels", value: "`/level` `/leaderboard`", inline: false }
       ]
     },
     community: {
-      title: "🎫 Community",
-      desc: "Useful tools for running a community.",
+      title: "🎉 Community",
+      desc: "Engagement and server utility features.",
       color: COLORS.cyan,
       fields: [
-        { name: "Tickets", value: "`/ticket setup` `/ticket panel` `/ticket close`", inline: false },
-        { name: "Announcements", value: "`/announce`", inline: false },
-        { name: "Reminders", value: "`/remind`", inline: false },
-        { name: "Notifications", value: "`/notify set` `/notify test`", inline: false }
+        { name: "Tickets & Welcome", value: "`/ticket` and `/welcome`", inline: false },
+        { name: "Giveaways", value: "`/giveaway start` `/giveaway end` `/giveaway reroll`", inline: false },
+        { name: "Polls", value: "`/poll`", inline: false },
+        { name: "Notifications", value: "`/notify set` `/notify test`\\nYouTube/Reddit feeds • 💎 Premium", inline: false }
       ]
     },
     ai: {
       title: "🤖 Vyne AI",
-      desc: "Optional Gemini-powered server assistant. AI is separate from moderation enforcement.",
+      desc: "Optional Gemini-powered assistant.",
       color: COLORS.primary,
       fields: [
-        { name: "Ask", value: "`/ask <prompt>` — ask Vyne AI a question.", inline: false },
-        { name: "Control", value: "`/ai enable` `/ai disable` `/ai status` `/ai clear`", inline: false },
-        { name: "Privacy", value: "API keys stay in environment variables. Vyne does not expose tokens or private configuration to the model.", inline: false }
+        { name: "Ask", value: "`/ask <prompt>`", inline: false },
+        { name: "Control", value: "`/ai enable` `/ai disable` `/ai status` `/ai clear`", inline: false }
+      ]
+    },
+    premium: {
+      title: "◆ Vyne Premium",
+      desc: "Every Premium plan has the same complete feature access. Only subscription duration changes.",
+      color: COLORS.primary,
+      fields: [
+        { name: "Plans", value: "🥉 7 Days • 🥈 30 Days • 🥇 90 Days • 💎 1 Year • ♾️ Lifetime", inline: false },
+        { name: "Features", value: "Custom tickets, advanced welcome, AutoMod Pro, Anti-Nuke advanced controls, VoiceMaster, analytics and feed notifications.", inline: false },
+        { name: "Owner controls", value: "`/premium user add` and `/premium server add` open a plan dropdown. Only the configured Vyne owner can manage subscriptions.", inline: false }
+      ]
+    },
+    noprefix: {
+      title: "⚡ No-Prefix",
+      desc: "Completely separate from Premium.",
+      color: COLORS.warning,
+      fields: [
+        { name: "Plans", value: "⚡ 7 Days • ⚡ 30 Days • ⚡ 90 Days • ⚡ 1 Year • ♾️ Lifetime", inline: false },
+        { name: "Usage", value: "Granted users/servers can run supported commands without a prefix.", inline: false },
+        { name: "Management", value: "`/noprefix user add` and `/noprefix server add` open a duration dropdown. Owner only.", inline: false }
       ]
     },
     system: {
       title: "⚙️ System",
-      desc: "Owner controls and diagnostics.",
+      desc: "Owner-only deployment controls.",
       color: COLORS.dark,
       fields: [
         { name: "Hosting", value: "`/sys status` `/sys info` `/sys diagnose` `/sys logs`", inline: false },
-        { name: "Deployment", value: "`/sys pull` `/sys restart`", inline: false },
-        { name: "Statistics", value: "`/botstats` — live RAM, disk, CPU, network, uptime and Discord stats.", inline: false }
+        { name: "Deployment", value: "`/sys pull` and `/sys restart` send an immediate acknowledgement before contacting Bot-Hosting.", inline: false },
+        { name: "Config", value: "`/config` `/logchannel` `/modrole`", inline: false }
       ]
     }
   };
 
   const p = pages[page] || pages.home;
   const e = embed(p.title, p.desc, p.color).addFields(p.fields);
+  const menu = new StringSelectMenuBuilder().setCustomId("vyne_help").setPlaceholder("Explore a Vyne category").addOptions([
+    { label: "Overview", value: "home", emoji: "✦" },
+    { label: "Moderation", value: "moderation", emoji: "🛡️" },
+    { label: "Security", value: "security", emoji: "☢️" },
+    { label: "Tickets", value: "tickets", emoji: "🎫" },
+    { label: "Welcome", value: "welcome", emoji: "👋" },
+    { label: "VoiceMaster", value: "voicemaster", emoji: "🎙️" },
+    { label: "Analytics", value: "analytics", emoji: "📊" },
+    { label: "Community", value: "community", emoji: "🎉" },
+    { label: "AI", value: "ai", emoji: "🤖" },
+    { label: "Premium", value: "premium", emoji: "◆" },
+    { label: "No-Prefix", value: "noprefix", emoji: "⚡" },
+    { label: "System", value: "system", emoji: "⚙️" }
+  ]);
+  const back = new ButtonBuilder().setCustomId("vyne_help_back").setLabel("Back to Overview").setEmoji("↩️").setStyle(ButtonStyle.Secondary).setDisabled(page === "home");
+  return { embeds: [e], components: [new ActionRowBuilder().addComponents(menu), new ActionRowBuilder().addComponents(back)] };
+}
 
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("vyne_help")
-    .setPlaceholder("Explore Vyne")
-    .addOptions([
-      { label: "Overview", value: "home", emoji: "✦" },
-      { label: "Moderation", value: "moderation", emoji: "🛡️" },
-      { label: "Security", value: "security", emoji: "🔐" },
-      { label: "Community", value: "community", emoji: "🎫" },
-      { label: "AI", value: "ai", emoji: "🤖" },
-      { label: "System", value: "system", emoji: "⚙️" }
-    ]);
-
-  return safeReply(interaction, {
-    embeds: [e],
-    components: [new ActionRowBuilder().addComponents(menu)]
-  });
+async function sendHelp(interaction, page = "home") {
+  await deferOnce(interaction);
+  return interaction.editReply(helpPayload(page));
 }
 
 function automodPanel(guildId) {
@@ -905,16 +1436,395 @@ function configPanel(guildId) {
     { name: "🤖 AI", value: cfg.ai?.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true }
   );
 
-  const buttons = [
+  const buttons1 = [
     new ButtonBuilder().setCustomId("cfg_automod").setLabel("AutoMod").setEmoji("⚡").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("cfg_antinuke").setLabel("Anti-Nuke").setEmoji("☢️").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("cfg_verify").setLabel("Verification").setEmoji("🔐").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("cfg_raid").setLabel("Raid").setEmoji("🚨").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("cfg_ai").setLabel("AI").setEmoji("🤖").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("cfg_ai").setLabel("AI").setEmoji("🤖").setStyle(ButtonStyle.Secondary)
+  ];
+  const buttons2 = [
     new ButtonBuilder().setCustomId("cfg_refresh").setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Secondary)
   ];
-  return { embeds: [e], components: [new ActionRowBuilder().addComponents(buttons)] };
+  return { embeds: [e], components: [new ActionRowBuilder().addComponents(buttons1), new ActionRowBuilder().addComponents(buttons2)] };
 }
 
+
+const ANTI_NUKE_ACTIONS = {};
+for (const [key, eventName] of Object.entries({
+  channelDelete: "ChannelDelete",
+  channelCreate: "ChannelCreate",
+  roleDelete: "RoleDelete",
+  roleCreate: "RoleCreate",
+  roleUpdate: "RoleUpdate",
+  massBan: "MemberBanAdd",
+  massKick: "MemberKick",
+  webhooks: "WebhookDelete",
+  webhookCreate: "WebhookCreate",
+  permissionChanges: "ChannelOverwriteUpdate",
+  botAdd: "BotAdd",
+  memberRoleUpdate: "MemberRoleUpdate"
+})) {
+  if (typeof AuditLogEvent?.[eventName] === "number") ANTI_NUKE_ACTIONS[AuditLogEvent[eventName]] = key;
+}
+
+function antinukeWhitelistIncludes(guild, executorId) {
+  const cfg = getGuildData(guild.id).antinuke;
+  if (executorId === guild.ownerId || executorId === client.user.id || executorId === VYNE_OWNER_ID) return true;
+  if (cfg.whitelistUserIds.includes(executorId)) return true;
+  const member = guild.members.cache.get(executorId);
+  return Boolean(member && member.roles.cache.some(r => cfg.whitelistRoleIds.includes(r.id)));
+}
+
+async function enableLockdown(guild, reason = "Vyne emergency lockdown") {
+  const cfg = getGuildData(guild.id);
+  cfg.raid.lockdown = true;
+  writeJSON(FILES.config, db.config);
+  const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText);
+  await Promise.all([...channels.values()].map(ch =>
+    ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }, { reason }).catch(() => {})
+  ));
+  await logAction(guild, "🚨 Emergency lockdown", "Vyne locked text channels to stop further damage.", COLORS.danger);
+}
+
+async function disableLockdown(guild) {
+  const cfg = getGuildData(guild.id);
+  cfg.raid.lockdown = false;
+  writeJSON(FILES.config, db.config);
+  const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText);
+  await Promise.all([...channels.values()].map(ch =>
+    ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null }, { reason: "Vyne lockdown disabled" }).catch(() => {})
+  ));
+  await logAction(guild, "🔓 Lockdown disabled", "Vyne restored normal text-channel sending permissions where possible.", COLORS.success);
+}
+
+async function applyAntinukeAction(guild, executorId, eventKey, entry) {
+  const cfg = getGuildData(guild.id).antinuke;
+  if (!cfg.enabled || !cfg.rules[eventKey] || antinukeWhitelistIncludes(guild, executorId)) return;
+  const key = `${guild.id}:${eventKey}:${executorId}`;
+  const now = Date.now();
+  const arr = antinukeTracker.get(key) || [];
+  arr.push(now);
+  while (arr.length && now - arr[0] > cfg.window) arr.shift();
+  antinukeTracker.set(key, arr);
+  const threshold = Number(cfg.thresholds[eventKey] || 999999);
+  if (arr.length < threshold) return;
+  antinukeTracker.set(key, []);
+
+  const member = await guild.members.fetch(executorId).catch(() => null);
+  if (!member || !member.manageable || member.id === guild.ownerId) return;
+  const reason = `Vyne Anti-Nuke: ${eventKey} threshold exceeded`;
+  const c = nextCase(guild.id, `ANTINUKE_${eventKey.toUpperCase()}`, executorId, client.user.id, reason);
+
+  try {
+    if (cfg.action === "ban") await member.ban({ reason });
+    else if (cfg.action === "kick") await member.kick(reason);
+    else if (cfg.action === "timeout") await member.timeout(Math.min(cfg.timeoutMs, 28 * 86400000), reason);
+  } catch (err) {
+    console.error("Anti-Nuke punishment failed:", err?.message || err);
+  }
+
+  if (cfg.lockdownOnTrigger) await enableLockdown(guild, "Vyne Anti-Nuke trigger");
+  await logAction(guild, "☢️ Anti-Nuke Triggered", `<@${executorId}> exceeded the **${eventKey}** threshold.`, COLORS.danger, [
+    { name: "Action", value: cfg.action },
+    { name: "Threshold", value: `${threshold} actions in ${cfg.window}ms` },
+    { name: "Case", value: `#${c.id}` },
+    { name: "Audit action", value: String(entry?.action ?? "unknown") }
+  ]);
+}
+
+function antiNukePanel(guildId) {
+  const cfg = getGuildData(guildId).antinuke;
+  const on = x => x ? "🟢 ON" : "🔴 OFF";
+  const e = embed("☢️ Vyne Anti-Nuke", "Basic server protection is free. Advanced thresholds, custom actions, lockdown automation and extra rules are available with Premium.", COLORS.danger)
+    .addFields(
+      { name: "Master", value: on(cfg.enabled), inline: true },
+      { name: "Channel Delete", value: on(cfg.rules.channelDelete), inline: true },
+      { name: "Role Delete", value: on(cfg.rules.roleDelete), inline: true },
+      { name: "Mass Ban", value: on(cfg.rules.massBan), inline: true },
+      { name: "Mass Kick", value: on(cfg.rules.massKick), inline: true },
+      { name: "Webhooks", value: on(cfg.rules.webhooks), inline: true },
+      { name: "Bot Add", value: on(cfg.rules.botAdd), inline: true },
+      { name: "Advanced", value: cfg.premiumAdvanced ? "💎 Enabled" : "🔒 Premium", inline: true },
+      { name: "Trusted Users", value: String(cfg.whitelistUserIds.length), inline: true }
+    );
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("vyne_antinuke")
+    .setPlaceholder("Configure Anti-Nuke protection")
+    .addOptions([
+      { label: "Master Protection", value: "enabled", emoji: "☢️" },
+      { label: "Channel Delete", value: "channelDelete", emoji: "🗑️" },
+      { label: "Role Delete", value: "roleDelete", emoji: "🧹" },
+      { label: "Mass Ban", value: "massBan", emoji: "🔨" },
+      { label: "Mass Kick", value: "massKick", emoji: "👢" },
+      { label: "Webhooks", value: "webhooks", emoji: "🪝" },
+      { label: "Bot Add", value: "botAdd", emoji: "🤖" },
+      { label: "Channel Create • 💎", value: "channelCreate", emoji: "📺" },
+      { label: "Role Create • 💎", value: "roleCreate", emoji: "🎭" },
+      { label: "Role Update • 💎", value: "roleUpdate", emoji: "🛠️" },
+      { label: "Permission Changes • 💎", value: "permissionChanges", emoji: "🔑" },
+      { label: "Advanced Settings • 💎", value: "advanced", emoji: "⚙️" },
+      { label: "Lockdown", value: "lockdown", emoji: "🚨" }
+    ]);
+
+  return {
+    embeds: [e],
+    components: [
+      new ActionRowBuilder().addComponents(menu),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("antinuke_refresh").setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("antinuke_lockdown").setLabel("Emergency Lockdown").setEmoji("🚨").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("antinuke_unlock").setLabel("Unlock").setEmoji("🔓").setStyle(ButtonStyle.Success)
+      )
+    ]
+  };
+}
+
+function automodAdvancedPanel(guildId) {
+  const a = getGuildData(guildId).automod;
+  return {
+    embeds: [embed("💎 Advanced AutoMod", "Premium controls for thresholds, blocked terms and domains.", COLORS.primary).addFields(
+      { name: "Spam", value: `${a.spamMessages} / ${a.spamWindow}ms`, inline: true },
+      { name: "Mentions", value: String(a.maxMentions), inline: true },
+      { name: "Emoji", value: String(a.maxEmoji), inline: true },
+      { name: "Caps", value: `${a.maxCapsPercent}%`, inline: true },
+      { name: "Blocked words", value: String(a.blockedWords.length), inline: true },
+      { name: "Blocked domains", value: String(a.blockedDomains.length), inline: true }
+    )],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("automod_adv_thresholds").setLabel("Thresholds").setEmoji("🎚️").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("automod_adv_words").setLabel("Blocked Words").setEmoji("🚫").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("automod_adv_domains").setLabel("Domains").setEmoji("🌐").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("automod_adv_refresh").setLabel("Refresh").setEmoji("🔄").setStyle(ButtonStyle.Secondary)
+    )]
+  };
+}
+
+function buildTicketQuestionModal(guildId, categoryId) {
+  const questions = getGuildData(guildId).tickets.premium.questions.slice(0, 5);
+  const modal = new ModalBuilder().setCustomId(`ticket_questions_${categoryId}`).setTitle("Ticket Questions");
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId(`question_${i}`)
+        .setLabel(truncate(q.label || `Question ${i + 1}`, 45))
+        .setPlaceholder(truncate(q.placeholder || "Type your answer...", 100))
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(q.required !== false)
+    ));
+  }
+  return modal;
+}
+
+function buildTicketPanelModal() {
+  return new ModalBuilder().setCustomId("ticket_builder_edit_modal").setTitle("Edit Ticket Panel").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("panel_title").setLabel("Panel title").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("panel_description").setLabel("Panel description").setRequired(true).setStyle(TextInputStyle.Paragraph)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("button_label").setLabel("Button label").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("button_emoji").setLabel("Button emoji").setRequired(false).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("panel_image").setLabel("Panel image URL (optional)").setRequired(false).setStyle(TextInputStyle.Short))
+  );
+}
+
+function buildTicketCategoryModal() {
+  return new ModalBuilder().setCustomId("ticket_builder_category_modal").setTitle("Add Ticket Category").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("category_name").setLabel("Category name").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("category_description").setLabel("Category description").setRequired(true).setStyle(TextInputStyle.Paragraph)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("category_emoji").setLabel("Emoji (optional)").setRequired(false).setStyle(TextInputStyle.Short))
+  );
+}
+
+function buildTicketQuestionBuilderModal() {
+  return new ModalBuilder().setCustomId("ticket_builder_question_modal").setTitle("Add Ticket Question").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_label").setLabel("Question").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_placeholder").setLabel("Placeholder").setRequired(false).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_required").setLabel("Required? yes/no").setRequired(false).setStyle(TextInputStyle.Short))
+  );
+}
+
+function buildWelcomeModal() {
+  return new ModalBuilder().setCustomId("welcome_advanced_modal").setTitle("Vyne Advanced Welcome").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("welcome_title").setLabel("Welcome title").setPlaceholder("Welcome to {server}").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("welcome_message").setLabel("Welcome message").setPlaceholder("Welcome {user}!").setRequired(true).setStyle(TextInputStyle.Paragraph)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("welcome_image").setLabel("Image URL (optional)").setRequired(false).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("welcome_color").setLabel("Hex color (optional)").setPlaceholder("7C5CFF").setRequired(false).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("welcome_delete").setLabel("Auto-delete seconds (0 = off)").setRequired(false).setStyle(TextInputStyle.Short))
+  );
+}
+
+function buildAutomodThresholdModal() {
+  return new ModalBuilder().setCustomId("automod_adv_thresholds_modal").setTitle("AutoMod Thresholds").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("spam_messages").setLabel("Messages in spam window").setPlaceholder("6").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("spam_window").setLabel("Spam window milliseconds").setPlaceholder("7000").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("max_mentions").setLabel("Max mentions").setPlaceholder("5").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("max_emoji").setLabel("Max emoji").setPlaceholder("12").setRequired(true).setStyle(TextInputStyle.Short)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("caps_percent").setLabel("Caps percent").setPlaceholder("75").setRequired(true).setStyle(TextInputStyle.Short))
+  );
+}
+
+function buildAutomodWordsModal() {
+  return new ModalBuilder().setCustomId("automod_adv_words_modal").setTitle("Blocked Words").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("words").setLabel("Comma-separated words").setRequired(false).setStyle(TextInputStyle.Paragraph))
+  );
+}
+
+function buildAutomodDomainsModal() {
+  return new ModalBuilder().setCustomId("automod_adv_domains_modal").setTitle("Blocked Domains").addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("domains").setLabel("Comma-separated domains").setRequired(false).setStyle(TextInputStyle.Paragraph))
+  );
+}
+
+async function createTicketChannel(interaction, categoryId = "general", answers = {}) {
+  const cfg = getGuildData(interaction.guildId);
+  if (!cfg.tickets.enabled || !cfg.tickets.categoryId) throw new Error("Tickets have not been configured.");
+  if (!db.tickets[interaction.guildId]) db.tickets[interaction.guildId] = {};
+  const existing = Object.values(db.tickets[interaction.guildId]).filter(t => t.open && t.userId === interaction.user.id);
+  const maxOpen = Math.max(1, Number(cfg.tickets.premium.maxOpenPerUser || 1));
+  if (existing.length >= maxOpen) throw new Error(`You already have ${existing.length} open ticket${existing.length === 1 ? "" : "s"}.`);
+
+  const category = cfg.tickets.premium.categories.find(c => c.id === categoryId) || cfg.tickets.premium.categories[0];
+  const safeName = `${category?.name || "ticket"}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").slice(0, 90);
+  const overwrites = [
+    { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+  ];
+  if (cfg.tickets.staffRoleId) overwrites.push({ id: cfg.tickets.staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+
+  const channel = await interaction.guild.channels.create({
+    name: safeName || `ticket-${interaction.user.username}`.slice(0, 90),
+    type: ChannelType.GuildText,
+    parent: cfg.tickets.categoryId,
+    permissionOverwrites: overwrites,
+    reason: `Vyne ticket created by ${interaction.user.tag}`
+  });
+
+  db.tickets[interaction.guildId][channel.id] = {
+    userId: interaction.user.id,
+    channelId: channel.id,
+    categoryId: category?.id || "general",
+    categoryName: category?.name || "General Support",
+    open: true,
+    claimedBy: null,
+    createdAt: Date.now(),
+    answers
+  };
+  writeJSON(FILES.tickets, db.tickets);
+
+  const buttons = [];
+  if (cfg.tickets.premium.claimEnabled && premiumActive(interaction.user.id, interaction.guildId)) {
+    buttons.push(new ButtonBuilder().setCustomId("vyne_ticket_claim").setLabel("Claim").setEmoji("🙋").setStyle(ButtonStyle.Secondary));
+  }
+  buttons.push(new ButtonBuilder().setCustomId("vyne_ticket_close").setLabel("Close Ticket").setEmoji("🔒").setStyle(ButtonStyle.Danger));
+
+  const answerText = Object.keys(answers).length
+    ? Object.entries(answers).map(([k,v]) => `**${truncate(k, 80)}:** ${truncate(v, 600)}`).join("\\n")
+    : "No ticket questions were configured.";
+
+  await channel.send({
+    content: `<@${interaction.user.id}>${cfg.tickets.staffRoleId ? ` <@&${cfg.tickets.staffRoleId}>` : ""}`,
+    embeds: [embed(`${category?.emoji || "🎫"} ${category?.name || "Support Ticket"}`, `${category?.description || "Please describe your issue."}\\n\\n${answerText}`, COLORS.primary)],
+    components: [new ActionRowBuilder().addComponents(buttons)]
+  });
+  return channel;
+}
+
+async function buildTicketTranscript(channel) {
+  const messages = await channel.messages.fetch({ limit: 100 }).catch(() => new Collection());
+  return [...messages.values()].sort((a,b) => a.createdTimestamp - b.createdTimestamp).map(m =>
+    `[${new Date(m.createdTimestamp).toISOString()}] ${m.author?.tag || m.author?.id || "Unknown"}: ${(m.content || "[embed/attachment]").replace(/\\r?\\n/g, " ")}`
+  ).join("\\n");
+}
+
+async function closeTicketInteraction(interaction, reason = "No reason provided") {
+  const ticket = db.tickets[interaction.guildId]?.[interaction.channelId];
+  if (!ticket?.open) return safeReply(interaction, { embeds: [errorEmbed("Not a ticket", "This channel is not an active ticket.")], flags: MessageFlags.Ephemeral });
+  if (interaction.user.id !== ticket.userId && !isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "Only the ticket owner or staff can close this ticket.")], flags: MessageFlags.Ephemeral });
+
+  const cfg = getGuildData(interaction.guildId);
+  ticket.open = false;
+  ticket.closedAt = Date.now();
+  ticket.closedBy = interaction.user.id;
+  ticket.closeReason = reason || "No reason provided";
+  writeJSON(FILES.tickets, db.tickets);
+
+  if (cfg.tickets.premium.transcriptEnabled) {
+    const transcriptChannelId = cfg.tickets.premium.transcriptChannelId || cfg.logChannelId;
+    const transcriptChannel = transcriptChannelId ? interaction.guild.channels.cache.get(transcriptChannelId) : null;
+    if (transcriptChannel?.isTextBased()) {
+      const transcript = await buildTicketTranscript(interaction.channel);
+      await transcriptChannel.send({
+        embeds: [embed("🎫 Ticket Transcript", `Ticket <#${interaction.channelId}> closed by <@${interaction.user.id}>.\\n\\n**Reason:** ${truncate(reason, 1000)}`, COLORS.info)],
+        files: [new AttachmentBuilder(Buffer.from(transcript || "No messages.", "utf8"), { name: `ticket-${interaction.channelId}.txt` })]
+      }).catch(() => {});
+    }
+  }
+
+  await interaction.channel.send({ embeds: [success("Ticket closed", `**Reason:** ${truncate(reason, 1000)}\\nThis channel will be deleted in 5 seconds.`)] }).catch(() => {});
+  await logAction(interaction.guild, "🎫 Ticket closed", `<#${interaction.channelId}> was closed by <@${interaction.user.id}>.`, COLORS.warning, [
+    { name: "Reason", value: truncate(reason, 1000) },
+    { name: "Category", value: ticket.categoryName || "General" }
+  ]);
+  setTimeout(() => interaction.channel.delete("Vyne ticket closed").catch(() => {}), 5000);
+}
+
+function ticketBuilderPanel(guildId) {
+  const p = getGuildData(guildId).tickets.premium;
+  const e = embed("🎫 Ticket Builder", "Customize the Premium ticket experience. Changes save immediately.", COLORS.primary).addFields(
+    { name: "Panel", value: `**${truncate(p.panelTitle, 70)}**\\n${truncate(p.panelDescription, 180)}`, inline: false },
+    { name: "Categories", value: String(p.categories.length), inline: true },
+    { name: "Questions", value: String(p.questions.length), inline: true },
+    { name: "Claim", value: p.claimEnabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
+    { name: "Close reason", value: p.closeReasonRequired ? "🟢 Required" : "🔴 Optional", inline: true },
+    { name: "Transcript", value: p.transcriptEnabled ? "🟢 Enabled" : "🔴 Disabled", inline: true }
+  );
+  return {
+    embeds: [e],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("ticket_builder_edit").setLabel("Edit Panel").setEmoji("🖊️").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("ticket_builder_category").setLabel("Add Category").setEmoji("📁").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("ticket_builder_question").setLabel("Add Question").setEmoji("❓").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("ticket_builder_preview").setLabel("Preview").setEmoji("👀").setStyle(ButtonStyle.Success)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("ticket_builder_claim").setLabel(p.claimEnabled ? "Disable Claim" : "Enable Claim").setEmoji("🙋").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("ticket_builder_reason").setLabel(p.closeReasonRequired ? "Optional Close Reason" : "Require Close Reason").setEmoji("📝").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("ticket_builder_transcript").setLabel(p.transcriptEnabled ? "Disable Transcript" : "Enable Transcript").setEmoji("📜").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("ticket_builder_reset").setLabel("Reset").setEmoji("♻️").setStyle(ButtonStyle.Danger)
+      )
+    ]
+  };
+}
+
+function ticketPanelPayload(guildId) {
+  const cfg = getGuildData(guildId);
+  const p = cfg.tickets.premium;
+  const e = embed(`${p.buttonEmoji || "🎫"} ${p.panelTitle || "Vyne Support Center"}`, p.panelDescription || "Need help? Create a private ticket.", p.panelColor || COLORS.primary);
+  if (p.panelImage) e.setImage(p.panelImage);
+
+  const components = [];
+  if (p.categories.length > 1 && (cfg.tickets.advancedEnabled || false)) {
+    const menu = new StringSelectMenuBuilder().setCustomId("vyne_ticket_category").setPlaceholder("Choose a ticket category").addOptions(
+      p.categories.slice(0, 25).map(c => ({ label: truncate(c.name || "Category", 100), value: String(c.id).slice(0, 100), description: truncate(c.description || "", 100), emoji: c.emoji || "🎫" }))
+    );
+    components.push(new ActionRowBuilder().addComponents(menu));
+  } else {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("vyne_ticket_create").setLabel(p.buttonLabel || "Create Ticket").setEmoji(p.buttonEmoji || "🎫").setStyle(ButtonStyle.Primary)
+    ));
+  }
+  return { embeds: [e], components };
+}
+
+function welcomePreviewEmbed(member) {
+  const cfg = getGuildData(member.guild.id).welcome;
+  const e = embed(substituteVars(cfg.title, member), substituteVars(cfg.message, member), cfg.color || COLORS.primary)
+    .setThumbnail(member.user.displayAvatarURL({ size: 256 }));
+  if (cfg.imageUrl) e.setImage(cfg.imageUrl);
+  return e;
+}
 async function botStatsEmbed() {
   const guildCount = client.guilds.cache.size;
   const userCount = client.guilds.cache.reduce((n, g) => n + (g.memberCount || 0), 0);
@@ -1005,6 +1915,7 @@ async function botStatsEmbed() {
 }
 
 async function handleModeration(interaction) {
+  await deferOnce(interaction);
   const command = interaction.commandName;
   const target = interaction.options.getMember("user");
   const reason = interaction.options.getString("reason") || "No reason provided";
@@ -1167,6 +2078,9 @@ async function handleMessage(message) {
 
   if (cfg.automod.invites && hasInvite(text)) return punish("Discord invite detected.");
   if (cfg.automod.links && isUrl(text)) return punish("Link detected.");
+  if (cfg.automod.blockedDomains?.some(domain => new RegExp(`(?:^|[^a-z0-9])${String(domain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`, "i").test(text))) {
+    return punish("Blocked domain detected.");
+  }
 
   if (cfg.automod.mentions && message.mentions.users.size > cfg.automod.maxMentions) return punish("Mention spam detected.");
 
@@ -1200,49 +2114,188 @@ async function handleMessage(message) {
   duplicateTracker.set(dupKey, { text, time: now });
 }
 
+async function handleNoPrefixMessage(message) {
+  if (!message.guild || message.author.bot || !noPrefixActive(message.author.id, message.guild.id)) return false;
+  const content = message.content.trim();
+  if (!content) return false;
+  const parts = content.split(/\s+/);
+  const name = parts.shift().toLowerCase();
+  const args = parts;
+  const supported = new Set([
+    "help","ping","botstats","serverinfo","userinfo","avatar","level","leaderboard",
+    "balance","daily","lock","unlock","purge","warn","kick","ban","timeout","slowmode"
+  ]);
+  if (!supported.has(name)) return false;
+
+  trackAnalytics(message.guild.id, "commands");
+
+  try {
+    if (name === "help") {
+      const home = helpPayload("home");
+      await message.reply({ embeds: home.embeds });
+      return true;
+    }
+    if (name === "ping") {
+      await message.reply({ embeds: [embed("🏓 Pong", `WebSocket latency: **${client.ws.ping}ms**\nResponse: **Online**`, COLORS.success)] });
+      return true;
+    }
+    if (name === "botstats") {
+      const statsPayload = await botStatsEmbed();
+      await message.reply(statsPayload).catch(() => {});
+      return true;
+    }
+    if (name === "serverinfo") {
+      const g = message.guild;
+      await message.reply({ embeds: [embed(`🌐 ${g.name}`, "Server information.", COLORS.info).setThumbnail(g.iconURL({ size: 256 }) || null).addFields(
+        { name: "Owner", value: `<@${g.ownerId}>`, inline: true },
+        { name: "Members", value: String(g.memberCount), inline: true },
+        { name: "Channels", value: String(g.channels.cache.size), inline: true },
+        { name: "Roles", value: String(g.roles.cache.size), inline: true }
+      )] });
+      return true;
+    }
+    const mention = message.mentions.users.first();
+    const user = mention || message.author;
+    if (name === "userinfo") {
+      const member = await message.guild.members.fetch(user.id).catch(() => null);
+      await message.reply({ embeds: [embed(`👤 ${user.tag}`, "User information.", COLORS.info).setThumbnail(user.displayAvatarURL({ size: 256 })).addFields(
+        { name: "ID", value: `\`${user.id}\``, inline: true },
+        { name: "Created", value: `<t:${Math.floor(user.createdTimestamp/1000)}:F>`, inline: true },
+        { name: "Joined", value: member ? `<t:${Math.floor(member.joinedTimestamp/1000)}:F>` : "Not in server", inline: true }
+      )] });
+      return true;
+    }
+    if (name === "avatar") {
+      await message.reply({ embeds: [embed(`🖼️ ${user.tag}`, `[Open full-size avatar](${user.displayAvatarURL({ size: 4096 })})`, COLORS.info).setImage(user.displayAvatarURL({ size: 1024 }))] });
+      return true;
+    }
+    if (name === "level") {
+      const d = db.levels[message.guild.id]?.[user.id] || { xp: 0, level: 0 };
+      await message.reply({ embeds: [embed("⭐ Level", `<@${user.id}> is **Level ${d.level}** with **${d.xp} XP**.`, COLORS.primary)] });
+      return true;
+    }
+    if (name === "leaderboard") {
+      const list = Object.entries(db.levels[message.guild.id] || {}).sort((a,b) => (b[1].level*100+b[1].xp)-(a[1].level*100+a[1].xp)).slice(0,10);
+      await message.reply({ embeds: [embed("🏆 XP Leaderboard", list.length ? list.map(([id,d],i)=>`**${i+1}.** <@${id}> — Level ${d.level} • ${d.xp} XP`).join("\n") : "No XP data yet.", COLORS.primary)] });
+      return true;
+    }
+    if (name === "balance" || name === "daily") {
+      if (!db.economy[message.guild.id]) db.economy[message.guild.id] = {};
+      const get = id => db.economy[message.guild.id][id] || { coins: 0, lastDaily: 0 };
+      if (name === "balance") {
+        const d = get(user.id);
+        await message.reply({ embeds: [embed("💰 Balance", `<@${user.id}> has **${d.coins.toLocaleString()}** coins.`, COLORS.warning)] });
+      } else {
+        const d = get(message.author.id);
+        if (Date.now()-d.lastDaily < 86400000) await message.reply({ embeds: [warningEmbed("Daily already claimed", `Try again <t:${Math.floor((d.lastDaily+86400000)/1000)}:R>.`)] });
+        else { d.coins += 250; d.lastDaily = Date.now(); db.economy[message.guild.id][message.author.id]=d; writeJSON(FILES.economy, db.economy); await message.reply({ embeds: [success("Daily claimed","You received **250** coins.")] }); }
+      }
+      return true;
+    }
+
+    if (!message.member) return true;
+    const canModerate = message.member.permissions.has(PermissionFlagsBits.ManageMessages) || message.member.permissions.has(PermissionFlagsBits.ModerateMembers) || message.member.permissions.has(PermissionFlagsBits.ManageGuild) || message.member.roles.cache.has(getGuildData(message.guild.id).modRoleId);
+    if (!canModerate) {
+      await message.reply({ embeds: [errorEmbed("Permission denied","You don't have moderation permissions for that no-prefix command.")] });
+      return true;
+    }
+
+    if (["ban","kick","timeout","warn"].includes(name)) {
+      const target = message.mentions.members.first();
+      if (!target) { await message.reply({ embeds: [errorEmbed("Member required","Mention a member to use this command.")] }); return true; }
+      const hierarchy = hierarchyError({ guild: message.guild, member: message.member }, target);
+      if (hierarchy) { await message.reply({ embeds: [errorEmbed("Hierarchy check failed", hierarchy)] }); return true; }
+      const reason = args.filter(x => !/^<@!?\d+>$/.test(x) && !/^\d+\s*(s|m|h|d|w)$/i.test(x)).join(" ") || "No reason provided";
+      const c = nextCase(message.guild.id, name.toUpperCase(), target.id, message.author.id, reason);
+      if (name === "ban") await target.ban({ reason });
+      if (name === "kick") await target.kick(reason);
+      if (name === "timeout") {
+        const duration = parseDuration(args.find(x => /^\d+\s*(s|m|h|d|w)$/i.test(x)) || "10m");
+        if (!duration || duration > 28*86400000) { await message.reply({ embeds: [errorEmbed("Invalid duration","Use `10m`, `2h`, etc. (max 28 days).")] }); return true; }
+        await target.timeout(duration, reason);
+      }
+      if (name === "warn") addWarning(message.guild.id, target.id, message.author.id, reason);
+      await logAction(message.guild, `⚡ No-Prefix ${name}`, `<@${target.id}> was handled by <@${message.author.id}>.`, COLORS.warning, [{ name:"Case", value:`#${c.id}` }, { name:"Reason", value:reason }]);
+      await message.reply({ embeds: [success(`${name.charAt(0).toUpperCase()+name.slice(1)} complete`, `Case **#${c.id}**.`)] });
+      return true;
+    }
+
+    if (name === "purge") {
+      const amount = Math.min(100, Math.max(1, Number(args.find(x => /^\d+$/.test(x)) || 0)));
+      if (!amount) { await message.reply({ embeds: [errorEmbed("Amount required","Use `purge 10`.")] }); return true; }
+      const msgs = await message.channel.messages.fetch({ limit: Math.min(100, amount + 10) });
+      const selected = [...msgs.values()].filter(m => !m.pinned).slice(0, amount).filter(m => Date.now()-m.createdTimestamp < 14*86400000);
+      await message.channel.bulkDelete(selected, true);
+      await message.reply({ embeds: [success("Messages purged", `Deleted **${selected.length}** messages.`)] });
+      return true;
+    }
+    if (name === "lock" || name === "unlock") {
+      await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: name === "unlock" ? null : false });
+      await message.reply({ embeds: [success(name === "lock" ? "Channel locked" : "Channel unlocked", `${message.channel} has been updated.`)] });
+      return true;
+    }
+    if (name === "slowmode") {
+      const seconds = Math.min(21600, Math.max(0, Number(args[0] || 0)));
+      await message.channel.setRateLimitPerUser(seconds);
+      await message.reply({ embeds: [success("Slowmode updated", `Slowmode is now **${seconds}s**.`)] });
+      return true;
+    }
+  } catch (err) {
+    await message.reply({ embeds: [errorEmbed("No-Prefix error", truncate(err?.message || err, 1200))] }).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 client.on("messageCreate", async message => {
+  if (!message.guild || message.author.bot) return;
+  if (await handleNoPrefixMessage(message)) return;
   await handleMessage(message);
 
   if (!message.guild || message.author.bot || !gemini) return;
   const cfg = getAIConfig(message.guild.id);
-  if (!cfg.enabled) return;
-
-  const mentioned = message.mentions.has(client.user);
-  if (!mentioned) return;
-
+  if (!cfg.enabled || cfg.channelOnly && message.channelId !== cfg.channelOnly) return;
+  if (!message.mentions.has(client.user)) return;
   const cleaned = message.content.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
   if (!cleaned) return;
 
   const key = `ai:${message.guild.id}:${message.author.id}`;
   const now = Date.now();
   const last = cooldowns.get(key) || 0;
-  if (now - last < cfg.cooldownMs) return;
+  if (now-last < cfg.cooldownMs) return;
   cooldowns.set(key, now);
 
   try {
     await message.channel.sendTyping();
-    const answer = await askVyneAI({
-      guildId: message.guild.id,
-      userId: message.author.id,
-      username: message.author.tag,
-      prompt: cleaned,
-      channelName: message.channel.name
-    });
-    await message.reply({
-      embeds: [embed("🤖 Vyne AI", answer, COLORS.primary)]
-    });
+    const answer = await askVyneAI({ guildId:message.guild.id, userId:message.author.id, username:message.author.tag, prompt:cleaned, channelName:message.channel.name });
+    await message.reply({ embeds:[embed("🤖 Vyne AI", answer, COLORS.primary)] });
   } catch (err) {
-    await message.reply({
-      embeds: [errorEmbed("AI unavailable", String(err.message || err).slice(0, 1200))]
-    }).catch(() => {});
+    await message.reply({ embeds:[errorEmbed("AI unavailable", truncate(err?.message || err, 1200))] }).catch(() => {});
   }
 });
 
 client.on("guildMemberAdd", async member => {
+  trackAnalytics(member.guild.id, "joins");
   const cfg = getGuildData(member.guild.id);
+
   await logAction(member.guild, "📥 Member joined", `<@${member.id}> joined the server.`, COLORS.success, [
     { name: "Account created", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
   ]);
+
+  if (cfg.welcome.enabled && cfg.welcome.channelId) {
+    const channel = member.guild.channels.cache.get(cfg.welcome.channelId);
+    if (channel?.isTextBased()) {
+      const e = welcomePreviewEmbed(member);
+      const sent = await channel.send({ content: `<@${member.id}>`, embeds: [e] }).catch(() => null);
+      if (sent && cfg.welcome.deleteAfterMs > 0) {
+        setTimeout(() => sent.delete().catch(() => {}), cfg.welcome.deleteAfterMs);
+      }
+    }
+    if (cfg.welcome.autoRoleId) {
+      const role = member.guild.roles.cache.get(cfg.welcome.autoRoleId);
+      if (role && canBotManageRole(member.guild, role)) await member.roles.add(role, "Vyne welcome auto-role").catch(() => {});
+    }
+  }
 
   if (cfg.raid.enabled) {
     const now = Date.now();
@@ -1255,17 +2308,22 @@ client.on("guildMemberAdd", async member => {
     if (joins.length >= cfg.raid.joinLimit || tooYoung) {
       await logAction(member.guild, "🚨 Raid protection trigger", `<@${member.id}> matched a raid-protection condition.`, COLORS.danger, [
         { name: "Join rate", value: `${joins.length} joins / ${cfg.raid.window}ms` },
-        { name: "Account age check", value: tooYoung ? "Too new" : "Passed" }
+        { name: "Account age", value: tooYoung ? "Too new" : "Passed" }
       ]);
-      if (cfg.raid.lockdown && member.manageable && tooYoung) {
-        await member.timeout(10 * 60 * 1000, "Vyne raid protection").catch(() => {});
-      }
+      if (tooYoung && member.moderatable) await member.timeout(Math.min(10 * 60 * 1000, 28 * 86400000), "Vyne raid protection").catch(() => {});
+      if (cfg.raid.lockdown && joins.length >= cfg.raid.joinLimit) await enableLockdown(member.guild, "Vyne raid protection");
     }
   }
 });
 
 client.on("guildMemberRemove", member => {
+  trackAnalytics(member.guild.id, "leaves");
   logAction(member.guild, "📤 Member left", `${member.user?.tag || member.id} left the server.`, COLORS.danger);
+  const cfg = getGuildData(member.guild.id);
+  if (cfg.welcome.goodbyeEnabled && cfg.welcome.goodbyeChannelId) {
+    const ch = member.guild.channels.cache.get(cfg.welcome.goodbyeChannelId);
+    if (ch?.isTextBased()) ch.send({ embeds: [embed("👋 Goodbye", substituteVars(cfg.welcome.goodbyeMessage, member), COLORS.warning)] }).catch(() => {});
+  }
 });
 
 client.on("messageDelete", message => {
@@ -1284,557 +2342,426 @@ client.on("messageUpdate", (oldMessage, newMessage) => {
   ]);
 });
 
-client.on("voiceStateUpdate", (oldState, newState) => {
-  if (!newState.guild) return;
-  if (oldState.channelId === newState.channelId) return;
-  const action = !oldState.channelId ? "joined" : !newState.channelId ? "left" : "moved";
-  logAction(newState.guild, "🔊 Voice update", `<@${newState.id}> ${action} a voice channel.`, COLORS.info);
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  if (!newState.guild || oldState.channelId === newState.channelId) return;
+  const cfg = getGuildData(newState.guild.id);
+
+  if (newState.channelId && cfg.voicemaster.enabled && newState.channelId === cfg.voicemaster.hubChannelId && premiumActive(newState.id, newState.guild.id)) {
+    try {
+      let categoryId = cfg.voicemaster.categoryId;
+      if (!categoryId) {
+        const category = await newState.guild.channels.create({ name: "Vyne Voice", type: ChannelType.GuildCategory, reason: "Vyne VoiceMaster setup" });
+        categoryId = category.id;
+        cfg.voicemaster.categoryId = categoryId;
+        writeJSON(FILES.config, db.config);
+      }
+      const room = await newState.guild.channels.create({
+        name: `${newState.member?.user.username || "User"}'s Room`.slice(0, 95),
+        type: ChannelType.GuildVoice,
+        parent: categoryId,
+        userLimit: Number(cfg.voicemaster.limitDefault || 0),
+        reason: `Vyne VoiceMaster room for ${newState.member?.user.tag || newState.id}`
+      });
+      tempVoiceOwners.set(room.id, { guildId: newState.guild.id, ownerId: newState.id, createdAt: Date.now() });
+      await newState.setChannel(room).catch(async () => {
+        tempVoiceOwners.delete(room.id);
+        await room.delete().catch(() => {});
+      });
+      const control = cfg.voicemaster.controlChannelId ? newState.guild.channels.cache.get(cfg.voicemaster.controlChannelId) : null;
+      if (control?.isTextBased()) {
+        control.send({ embeds: [infoEmbed("🎙️ VoiceMaster", `<@${newState.id}> created ${room}. Use the VoiceMaster commands from inside your room.`)] }).catch(() => {});
+      }
+    } catch (err) {
+      console.error("VoiceMaster error:", err?.message || err);
+    }
+  }
+
+  if (oldState.channelId && tempVoiceOwners.has(oldState.channelId)) {
+    const channel = oldState.guild.channels.cache.get(oldState.channelId);
+    if (channel && channel.members.size === 0) {
+      tempVoiceOwners.delete(oldState.channelId);
+      setTimeout(() => {
+        if (channel.members.size === 0) channel.delete("Vyne VoiceMaster empty room").catch(() => {});
+      }, 1500);
+    }
+  }
+
+  logAction(newState.guild, "🔊 Voice update", `<@${newState.id}> ${!oldState.channelId ? "joined" : !newState.channelId ? "left" : "moved"} a voice channel.`, COLORS.info);
+});
+
+client.on("guildAuditLogEntryCreate", async (entry, guild) => {
+  try {
+    if (!guild || !entry?.executorId) return;
+    const eventKey = ANTI_NUKE_ACTIONS[entry.action];
+    if (!eventKey) return;
+    await applyAntinukeAction(guild, entry.executorId, eventKey, entry);
+  } catch (err) {
+    console.error("Anti-Nuke audit handler error:", err?.message || err);
+  }
 });
 
 async function handleInteraction(interaction) {
   try {
     if (interaction.isStringSelectMenu()) {
-      if (interaction.customId === "vyne_help") {
-        return sendHelp(interaction, interaction.values[0]);
-      }
-
+      if (interaction.customId === "vyne_help") return interaction.update(helpPayload(interaction.values[0]));
       if (interaction.customId === "vyne_automod") {
-        if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-        const cfg = getGuildData(interaction.guildId);
-        const key = interaction.values[0];
-        cfg.automod[key] = !cfg.automod[key];
-        writeJSON(FILES.config, db.config);
+        if (!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const key=interaction.values[0];
+        if (key === "advanced") {
+          if (!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+          return interaction.update(automodAdvancedPanel(interaction.guildId));
+        }
+        const cfg=getGuildData(interaction.guildId);
+        if (typeof cfg.automod[key] === "boolean") cfg.automod[key]=!cfg.automod[key];
+        writeJSON(FILES.config,db.config);
         return interaction.update(automodPanel(interaction.guildId));
+      }
+      if (interaction.customId === "vyne_antinuke") {
+        if (!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const key=interaction.values[0], cfg=getGuildData(interaction.guildId).antinuke;
+        if (key === "advanced") {
+          if (!premiumActive(interaction.user.id,interaction.guildId)) return interaction.update({...antiNukePanel(interaction.guildId),embeds:[embed("◆ Premium Required","Advanced Anti-Nuke controls require Premium.",COLORS.primary)]});
+          cfg.premiumAdvanced=!cfg.premiumAdvanced;
+        } else if (key === "lockdown") {
+          if (getGuildData(interaction.guildId).raid.lockdown) await disableLockdown(interaction.guild); else await enableLockdown(interaction.guild,"Manual Anti-Nuke lockdown");
+        } else if (["channelCreate","roleCreate","roleUpdate","permissionChanges"].includes(key)) {
+          if (!premiumActive(interaction.user.id,interaction.guildId)) return interaction.update({...antiNukePanel(interaction.guildId),embeds:[embed("◆ Premium Required","This Anti-Nuke rule requires Premium.",COLORS.primary)]});
+          cfg.rules[key]=!cfg.rules[key];
+        } else if (Object.prototype.hasOwnProperty.call(cfg.rules,key) || key==="enabled") {
+          if (key==="enabled") cfg.enabled=!cfg.enabled; else cfg.rules[key]=!cfg.rules[key];
+        }
+        writeJSON(FILES.config,db.config);
+        return interaction.update(antiNukePanel(interaction.guildId));
+      }
+      if (interaction.customId === "vyne_ticket_category") {
+        const cfg=getGuildData(interaction.guildId);
+        if (!cfg.tickets.enabled) return safeReply(interaction,{embeds:[errorEmbed("Tickets unavailable","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});
+        const categoryId=interaction.values[0];
+        if (cfg.tickets.premium.questions.length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,categoryId));
+        await deferOnce(interaction, MessageFlags.Ephemeral);
+        const channel=await createTicketChannel(interaction,categoryId);
+        return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${channel}.`)],flags:MessageFlags.Ephemeral});
+      }
+      if (interaction.customId.startsWith("premium_plan_")) {
+        if (!ownerOnly(interaction)) return interaction.update({embeds:[ownerGuardEmbed()],components:[]});
+        const match=interaction.customId.match(/^premium_plan_(user|server)_(.+)$/);
+        if (!match) return interaction.update({embeds:[errorEmbed("Invalid selector","This selector has expired.")],components:[]});
+        const scope=match[1], id=match[2], planKey=interaction.values[0];
+        const r=grantSubscription(db.premium,FILES.premium,scope==="user"?"users":"guilds",id,planKey,interaction.user.id);
+        const target=scope==="user"?`<@${id}>`:(client.guilds.cache.get(id)?.name||id);
+        const expires = r.expiresAt === null ? "♾️ Never" : `<t:${Math.floor(r.expiresAt/1000)}:F>`;
+        return interaction.update({
+          embeds: [success(
+            "Premium Granted",
+            `**User / Server:** ${target}\n**ID:** \`${id}\`\n**Plan:** ${PLAN_DEFINITIONS[planKey].label}\n**Granted:** <t:${Math.floor(r.grantedAt/1000)}:F>\n**Expires:** ${expires}\n\n◆ **All Premium features are active.**`
+          )],
+          components: []
+        });
+      }
+      if (interaction.customId.startsWith("noprefix_plan_")) {
+        if (!ownerOnly(interaction)) return interaction.update({embeds:[ownerGuardEmbed()],components:[]});
+        const match=interaction.customId.match(/^noprefix_plan_(user|server)_(.+)$/);
+        if (!match) return interaction.update({embeds:[errorEmbed("Invalid selector","This selector has expired.")],components:[]});
+        const scope=match[1], id=match[2], planKey=interaction.values[0];
+        const r=grantSubscription(db.noprefix,FILES.noprefix,scope==="user"?"users":"guilds",id,planKey,interaction.user.id);
+        const target=scope==="user"?`<@${id}>`:(client.guilds.cache.get(id)?.name||id);
+        const expires = r.expiresAt === null ? "♾️ Never" : `<t:${Math.floor(r.expiresAt/1000)}:F>`;
+        return interaction.update({
+          embeds: [success(
+            "No-Prefix Granted",
+            `**User / Server:** ${target}\n**ID:** \`${id}\`\n**Plan:** ${PLAN_DEFINITIONS[planKey].label}\n**Granted:** <t:${Math.floor(r.grantedAt/1000)}:F>\n**Expires:** ${expires}\n\n⚡ **Full No-Prefix access is active.**`
+          )],
+          components: []
+        });
       }
     }
 
     if (interaction.isButton()) {
-      if (interaction.customId === "botstats_refresh") {
-        if (!interaction.deferred) await interaction.deferUpdate();
-        const panel = await botStatsEmbed();
-        return interaction.editReply(panel);
-      }
-
-      if (interaction.customId === "vyne_automod_refresh") {
-        return interaction.update(automodPanel(interaction.guildId));
-      }
-
-      if (interaction.customId === "cfg_refresh") {
-        return interaction.update(configPanel(interaction.guildId));
-      }
-
-      if (interaction.customId === "cfg_automod") {
-        return interaction.update(automodPanel(interaction.guildId));
-      }
-
-      if (interaction.customId === "cfg_verify") {
-        const cfg = getGuildData(interaction.guildId);
-        return interaction.reply({ embeds: [infoEmbed("Verification", cfg.verification.enabled ? `Enabled • Role: <@&${cfg.verification.roleId}>` : "Verification is disabled.")], flags: MessageFlags.Ephemeral });
-      }
-
-      if (interaction.customId === "cfg_raid") {
-        const cfg = getGuildData(interaction.guildId);
-        return interaction.reply({ embeds: [infoEmbed("Raid protection", cfg.raid.enabled ? "Enabled." : "Disabled.")], flags: MessageFlags.Ephemeral });
-      }
-
-      if (interaction.customId === "cfg_ai") {
-        if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-        return interaction.reply({ embeds: [aiStatusEmbed(interaction.guildId)], flags: MessageFlags.Ephemeral });
-      }
-
+      if (interaction.customId === "vyne_help_back") return interaction.update(helpPayload("home"));
+      if (interaction.customId === "botstats_refresh") { await deferOnce(interaction); return interaction.editReply(await botStatsEmbed()); }
+      if (interaction.customId === "vyne_automod_refresh") return interaction.update(automodPanel(interaction.guildId));
+      if (interaction.customId === "cfg_refresh") return interaction.update(configPanel(interaction.guildId));
+      if (interaction.customId === "cfg_automod") return interaction.update(automodPanel(interaction.guildId));
+      if (interaction.customId === "cfg_antinuke") return interaction.update(antiNukePanel(interaction.guildId));
+      if (interaction.customId === "cfg_verify") { const cfg=getGuildData(interaction.guildId); return interaction.reply({embeds:[infoEmbed("Verification",cfg.verification.enabled?`Enabled • Role <@&${cfg.verification.roleId}>`:"Verification is disabled.")],flags:MessageFlags.Ephemeral}); }
+      if (interaction.customId === "cfg_raid") { const cfg=getGuildData(interaction.guildId); return interaction.reply({embeds:[infoEmbed("Raid Protection",cfg.raid.enabled?"Enabled.":"Disabled.")],flags:MessageFlags.Ephemeral}); }
+      if (interaction.customId === "cfg_ai") return interaction.reply({embeds:[aiStatusEmbed(interaction.guildId)],flags:MessageFlags.Ephemeral});
       if (interaction.customId === "vyne_verify") {
-        const cfg = getGuildData(interaction.guildId);
-        if (!cfg.verification.enabled || !cfg.verification.roleId) {
-          return safeReply(interaction, { embeds: [errorEmbed("Verification unavailable", "Verification has not been configured by the server staff.")], flags: MessageFlags.Ephemeral });
-        }
-        const role = interaction.guild.roles.cache.get(cfg.verification.roleId);
-        if (!role) return safeReply(interaction, { embeds: [errorEmbed("Role missing", "The configured verification role no longer exists.")], flags: MessageFlags.Ephemeral });
-        if (!canBotManageRole(interaction.guild, role)) {
-          return safeReply(interaction, { embeds: [errorEmbed("Role hierarchy", "Move Vyne's role above the verification role.")], flags: MessageFlags.Ephemeral });
-        }
-        const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (member.roles.cache.has(role.id)) {
-          return safeReply(interaction, { embeds: [infoEmbed("Already verified", "You already have the verification role.")], flags: MessageFlags.Ephemeral });
-        }
-        if (cfg.verification.accountAge > 0 && Date.now() - member.user.createdTimestamp < cfg.verification.accountAge) {
-          const remaining = cfg.verification.accountAge - (Date.now() - member.user.createdTimestamp);
-          return safeReply(interaction, { embeds: [warningEmbed("Account too new", `Your Discord account must be at least **${fmtDuration(cfg.verification.accountAge)}** old.\n\nTry again in approximately **${fmtDuration(remaining)}**.`)], flags: MessageFlags.Ephemeral });
-        }
-        await member.roles.add(role, "Vyne verification");
-        await logAction(interaction.guild, "🔐 Member verified", `<@${member.id}> completed verification and received <@&${role.id}>.`, COLORS.success);
-        return safeReply(interaction, { embeds: [success("Verification complete", `You are now verified and received ${role}.`)], flags: MessageFlags.Ephemeral });
+        const cfg=getGuildData(interaction.guildId); if(!cfg.verification.enabled||!cfg.verification.roleId) return safeReply(interaction,{embeds:[errorEmbed("Verification unavailable","Verification is not configured.")],flags:MessageFlags.Ephemeral});
+        const role=interaction.guild.roles.cache.get(cfg.verification.roleId); if(!role||!canBotManageRole(interaction.guild,role)) return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the verification role.")],flags:MessageFlags.Ephemeral});
+        const member=await interaction.guild.members.fetch(interaction.user.id); if(member.roles.cache.has(role.id)) return safeReply(interaction,{embeds:[infoEmbed("Already verified","You already have the verification role.")],flags:MessageFlags.Ephemeral});
+        if(cfg.verification.accountAge>0&&Date.now()-member.user.createdTimestamp<cfg.verification.accountAge) return safeReply(interaction,{embeds:[warningEmbed("Account too new",`Try again in **${fmtDuration(cfg.verification.accountAge-(Date.now()-member.user.createdTimestamp))}**.`)],flags:MessageFlags.Ephemeral});
+        await member.roles.add(role,"Vyne verification"); await logAction(interaction.guild,"🔐 Member verified",`<@${member.id}> received ${role}.`,COLORS.success);
+        return safeReply(interaction,{embeds:[success("Verification complete",`You received ${role}.`)],flags:MessageFlags.Ephemeral});
       }
 
       if (interaction.customId === "vyne_ticket_create") {
-        const cfg = getGuildData(interaction.guildId);
-        if (!cfg.tickets.enabled || !cfg.tickets.categoryId) {
-          return safeReply(interaction, { embeds: [errorEmbed("Tickets unavailable", "Tickets have not been configured.")], flags: MessageFlags.Ephemeral });
-        }
-        const existing = Object.values(db.tickets[interaction.guildId] || {}).find(t => t.userId === interaction.user.id && t.open);
-        if (existing) return safeReply(interaction, { embeds: [infoEmbed("Ticket already open", `You already have <#${existing.channelId}>.`)], flags: MessageFlags.Ephemeral });
-        const channel = await interaction.guild.channels.create({
-          name: `ticket-${interaction.user.username}`.slice(0, 90),
-          type: ChannelType.GuildText,
-          parent: cfg.tickets.categoryId,
-          permissionOverwrites: [
-            { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-            ...(cfg.tickets.staffRoleId ? [{ id: cfg.tickets.staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : [])
-          ]
-        });
-        if (!db.tickets[interaction.guildId]) db.tickets[interaction.guildId] = {};
-        db.tickets[interaction.guildId][channel.id] = { userId: interaction.user.id, channelId: channel.id, open: true, createdAt: Date.now() };
-        writeJSON(FILES.tickets, db.tickets);
-        const close = new ButtonBuilder().setCustomId("vyne_ticket_close").setLabel("Close Ticket").setEmoji("🔒").setStyle(ButtonStyle.Danger);
-        await channel.send({
-          content: `<@${interaction.user.id}>`,
-          embeds: [embed("🎫 Ticket opened", "Please describe your issue. A staff member will assist you.", COLORS.primary)],
-          components: [new ActionRowBuilder().addComponents(close)]
-        });
-        return safeReply(interaction, { embeds: [success("Ticket created", `Your ticket is ${channel}.`)], flags: MessageFlags.Ephemeral });
+        try {
+          const cfg=getGuildData(interaction.guildId);
+          if(!cfg.tickets.enabled) return safeReply(interaction,{embeds:[errorEmbed("Tickets unavailable","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});
+          if(premiumActive(interaction.user.id,interaction.guildId)&&cfg.tickets.premium.questions.length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,cfg.tickets.premium.categories[0]?.id||"general"));
+          await deferOnce(interaction, MessageFlags.Ephemeral);
+          const ch=await createTicketChannel(interaction,cfg.tickets.premium.categories[0]?.id||"general");
+          return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${ch}.`)],flags:MessageFlags.Ephemeral});
+        } catch(err) { return safeReply(interaction,{embeds:[errorEmbed("Ticket creation failed",truncate(err?.message||err,1200))],flags:MessageFlags.Ephemeral}); }
       }
-
+      if (interaction.customId === "vyne_ticket_claim") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","Only staff can claim tickets.")],flags:MessageFlags.Ephemeral});
+        const ticket=db.tickets[interaction.guildId]?.[interaction.channelId]; if(!ticket?.open) return safeReply(interaction,{embeds:[errorEmbed("Not a ticket","This is not an active ticket.")],flags:MessageFlags.Ephemeral});
+        ticket.claimedBy=interaction.user.id; writeJSON(FILES.tickets,db.tickets);
+        return interaction.update({embeds:[success("Ticket claimed",`<@${interaction.user.id}> claimed this ticket.`)],components:interaction.message.components});
+      }
       if (interaction.customId === "vyne_ticket_close") {
-        const ticket = db.tickets[interaction.guildId]?.[interaction.channelId];
-        if (!ticket?.open) return safeReply(interaction, { embeds: [errorEmbed("Not a ticket", "This channel is not an active ticket.")], flags: MessageFlags.Ephemeral });
-        const cfg = getGuildData(interaction.guildId);
-        if (interaction.user.id !== ticket.userId && !isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "Only the ticket owner or staff can close this ticket.")], flags: MessageFlags.Ephemeral });
-        ticket.open = false;
-        ticket.closedAt = Date.now();
-        writeJSON(FILES.tickets, db.tickets);
-        await interaction.channel.send({ embeds: [success("Ticket closed", "This ticket will be deleted in 5 seconds.")] }).catch(() => {});
-        setTimeout(() => interaction.channel.delete("Ticket closed").catch(() => {}), 5000);
-        return;
-      }
-    }
-
-    if (!interaction.isChatInputCommand()) return;
-
-    const command = interaction.commandName;
-
-    if (["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) {
-      return handleModeration(interaction);
-    }
-
-    if (command === "ask") return handleAICommand(interaction);
-
-    if (command === "ai") {
-      const sub = interaction.options.getSubcommand();
-      const cfg = getAIConfig(interaction.guildId);
-
-      if (sub === "status") {
-        return safeReply(interaction, { embeds: [aiStatusEmbed(interaction.guildId)], flags: MessageFlags.Ephemeral });
-      }
-
-      if (sub === "clear") {
-        if (db.ai[interaction.guildId]) {
-          delete db.ai[interaction.guildId][interaction.user.id];
-          writeJSON(FILES.ai, db.ai);
+        const p=getGuildData(interaction.guildId).tickets.premium;
+        if (p.closeReasonRequired && premiumActive(interaction.user.id,interaction.guildId)) {
+          const modal=new ModalBuilder().setCustomId("ticket_close_reason_modal").setTitle("Close Ticket").addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("reason").setLabel("Closing reason").setRequired(true).setStyle(TextInputStyle.Paragraph)));
+          return interaction.showModal(modal);
         }
-        return safeReply(interaction, { embeds: [success("AI history cleared", "Your Vyne AI conversation history has been cleared.")] });
+        return closeTicketInteraction(interaction,"No reason provided");
       }
-
-      if (!isStaff(interaction)) {
-        return safeReply(interaction, {
-          embeds: [errorEmbed("Permission denied", "Only server staff can enable or disable AI.")],
-          flags: MessageFlags.Ephemeral
-        });
+      if (interaction.customId === "antinuke_refresh") return interaction.update(antiNukePanel(interaction.guildId));
+      if (interaction.customId === "antinuke_lockdown") { if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral}); await deferOnce(interaction); await enableLockdown(interaction.guild,"Manual Anti-Nuke lockdown"); return interaction.editReply(antiNukePanel(interaction.guildId)); }
+      if (interaction.customId === "antinuke_unlock") { if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral}); await deferOnce(interaction); await disableLockdown(interaction.guild); return interaction.editReply(antiNukePanel(interaction.guildId)); }
+      if (interaction.customId === "ticket_builder_edit") return interaction.showModal(buildTicketPanelModal());
+      if (interaction.customId === "ticket_builder_category") return interaction.showModal(buildTicketCategoryModal());
+      if (interaction.customId === "ticket_builder_question") return interaction.showModal(buildTicketQuestionBuilderModal());
+      if (interaction.customId === "ticket_builder_preview") return interaction.update(ticketPanelPayload(interaction.guildId));
+      if (interaction.customId === "ticket_builder_claim" || interaction.customId === "ticket_builder_reason" || interaction.customId === "ticket_builder_transcript") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium;
+        if(interaction.customId==="ticket_builder_claim") p.claimEnabled=!p.claimEnabled;
+        if(interaction.customId==="ticket_builder_reason") p.closeReasonRequired=!p.closeReasonRequired;
+        if(interaction.customId==="ticket_builder_transcript") p.transcriptEnabled=!p.transcriptEnabled;
+        writeJSON(FILES.config,db.config);
+        return interaction.update(ticketBuilderPanel(interaction.guildId));
       }
-
-      cfg.enabled = sub === "enable";
-      writeJSON(FILES.config, db.config);
-
-      return safeReply(interaction, {
-        embeds: [success("AI configuration updated", `Vyne AI is now **${cfg.enabled ? "enabled" : "disabled"}** for this server.`)]
-      });
-    }
-
-    if (command === "help") return sendHelp(interaction);
-
-    if (command === "ping") {
-      const e = embed("🏓 Pong", `WebSocket latency: **${client.ws.ping}ms**\nResponse: **Online**`, COLORS.success);
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "botstats") {
-      return safeReply(interaction, await botStatsEmbed());
-    }
-
-    if (command === "userinfo") {
-      const user = interaction.options.getUser("user");
-      const member = await interaction.guild.members.fetch(user.id).catch(() => null);
-      const e = embed(`👤 ${user.tag}`, "User information.", COLORS.info)
-        .setThumbnail(user.displayAvatarURL({ size: 256 }))
-        .addFields(
-          { name: "User ID", value: `\`${user.id}\``, inline: true },
-          { name: "Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:F>`, inline: true },
-          { name: "Joined", value: member ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>` : "Not in server", inline: true },
-          { name: "Bot", value: user.bot ? "Yes" : "No", inline: true }
-        );
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "avatar") {
-      const user = interaction.options.getUser("user");
-      const e = embed(`🖼️ ${user.tag}`, `[Open full-size avatar](${user.displayAvatarURL({ size: 4096, extension: "png" })})`, COLORS.info)
-        .setImage(user.displayAvatarURL({ size: 1024, extension: "png" }));
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "serverinfo") {
-      const g = interaction.guild;
-      const e = embed(`🌐 ${g.name}`, "Server information.", COLORS.info)
-        .setThumbnail(g.iconURL({ size: 256 }))
-        .addFields(
-          { name: "Owner", value: `<@${g.ownerId}>`, inline: true },
-          { name: "Members", value: `${g.memberCount}`, inline: true },
-          { name: "Channels", value: `${g.channels.cache.size}`, inline: true },
-          { name: "Roles", value: `${g.roles.cache.size}`, inline: true },
-          { name: "Boosts", value: `${g.premiumSubscriptionCount || 0}`, inline: true },
-          { name: "Created", value: `<t:${Math.floor(g.createdTimestamp / 1000)}:F>`, inline: true }
-        );
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "servericon") {
-      const url = interaction.guild.iconURL({ size: 4096 });
-      if (!url) return safeReply(interaction, { embeds: [errorEmbed("No icon", "This server has no icon.")], flags: MessageFlags.Ephemeral });
-      return safeReply(interaction, { embeds: [embed("🖼️ Server Icon", `[Open full-size](${url})`, COLORS.info).setImage(url)] });
-    }
-
-    if (command === "serverbanner") {
-      const url = interaction.guild.bannerURL({ size: 4096 });
-      if (!url) return safeReply(interaction, { embeds: [errorEmbed("No banner", "This server has no banner.")], flags: MessageFlags.Ephemeral });
-      return safeReply(interaction, { embeds: [embed("🖼️ Server Banner", `[Open full-size](${url})`, COLORS.info).setImage(url)] });
-    }
-
-    if (command === "channelinfo") {
-      const channel = interaction.options.getChannel("channel") || interaction.channel;
-      const e = embed(`📺 ${channel.name}`, "Channel information.", COLORS.info).addFields(
-        { name: "ID", value: `\`${channel.id}\``, inline: true },
-        { name: "Type", value: `${channel.type}`, inline: true },
-        { name: "Created", value: `<t:${Math.floor(channel.createdTimestamp / 1000)}:F>`, inline: true }
-      );
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "roleinfo") {
-      const role = interaction.options.getRole("role");
-      const e = embed(`🎨 ${role.name}`, "Role information.", role.color || COLORS.info).addFields(
-        { name: "ID", value: `\`${role.id}\``, inline: true },
-        { name: "Position", value: `${role.position}`, inline: true },
-        { name: "Members", value: `${role.members.size}`, inline: true },
-        { name: "Mentionable", value: role.mentionable ? "Yes" : "No", inline: true },
-        { name: "Hoisted", value: role.hoist ? "Yes" : "No", inline: true }
-      );
-      return safeReply(interaction, { embeds: [e] });
-    }
-
-    if (command === "roles") {
-      const roles = interaction.guild.roles.cache.filter(r => r.id !== interaction.guild.id).sort((a,b) => b.position-a.position);
-      const lines = roles.map(r => `${r} — \`${r.members.size}\``).slice(0, 50).join("\n");
-      return safeReply(interaction, { embeds: [embed("🎨 Server Roles", lines || "No roles.", COLORS.info)] });
-    }
-
-    if (command === "permissions") {
-      const perms = interaction.member.permissions.toArray().map(p => `\`${p}\``).join(", ");
-      return safeReply(interaction, { embeds: [embed("🔑 Your Permissions", perms || "None", COLORS.info)] });
-    }
-
-    if (command === "joininfo") {
-      const user = interaction.options.getUser("user");
-      const member = await interaction.guild.members.fetch(user.id);
-      return safeReply(interaction, { embeds: [embed("📅 Join Information", `<@${user.id}> joined this server <t:${Math.floor(member.joinedTimestamp / 1000)}:R>.`, COLORS.info)] });
-    }
-
-    if (command === "automod") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      return safeReply(interaction, automodPanel(interaction.guildId));
-    }
-
-    if (command === "raid") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const cfg = getGuildData(interaction.guildId);
-      const sub = interaction.options.getSubcommand();
-      if (sub === "status") return safeReply(interaction, { embeds: [infoEmbed("🚨 Raid Protection", `Status: **${cfg.raid.enabled ? "Enabled" : "Disabled"}**\nJoin limit: **${cfg.raid.joinLimit}**\nWindow: **${cfg.raid.window}ms**\nMinimum account age: **${fmtDuration(cfg.raid.accountAge)}**`)] });
-      cfg.raid.enabled = sub === "on";
-      writeJSON(FILES.config, db.config);
-      return safeReply(interaction, { embeds: [success("Raid protection updated", `Raid protection is now **${cfg.raid.enabled ? "enabled" : "disabled"}**.`)] });
-    }
-
-    if (command === "verify") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const cfg = getGuildData(interaction.guildId);
-      const sub = interaction.options.getSubcommand();
-      if (sub === "disable") {
-        cfg.verification.enabled = false;
-        writeJSON(FILES.config, db.config);
-        return safeReply(interaction, { embeds: [success("Verification disabled", "Verification has been disabled.") ] });
+      if (interaction.customId === "ticket_builder_reset") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium;
+        Object.assign(p,{panelTitle:"Vyne Support Center",panelDescription:"Need help? Open a private support ticket and our staff will assist you.",buttonLabel:"Create Ticket",buttonEmoji:"🎫",panelImage:null,categories:[{id:"general",name:"General Support",description:"General questions or support.",emoji:"🎫"}],questions:[],claimEnabled:true,closeReasonRequired:false,transcriptEnabled:true,autoCloseMs:0,maxOpenPerUser:1});
+        getGuildData(interaction.guildId).tickets.advancedEnabled=false;
+        writeJSON(FILES.config,db.config);
+        return interaction.update(ticketBuilderPanel(interaction.guildId));
       }
-      const role = interaction.options.getRole("role");
-      if (!canBotManageRole(interaction.guild, role)) return safeReply(interaction, { embeds: [errorEmbed("Role hierarchy", "Move Vyne's role above the verification role.")], flags: MessageFlags.Ephemeral });
-      const days = interaction.options.getInteger("account_age_days") || 0;
-      cfg.verification = { enabled: true, channelId: interaction.channelId, roleId: role.id, accountAge: days * 86400000 };
-      writeJSON(FILES.config, db.config);
-
-      const button = new ButtonBuilder().setCustomId("vyne_verify").setLabel("Verify").setEmoji("🔐").setStyle(ButtonStyle.Success);
-      await interaction.channel.send({
-        embeds: [embed("🔐 Server Verification", "Click the button below to verify your account and receive access.\n\n" + (days ? `Minimum account age: **${days} days**` : "No account-age requirement."), COLORS.info)],
-        components: [new ActionRowBuilder().addComponents(button)]
-      });
-      return safeReply(interaction, { embeds: [success("Verification configured", `Verification role: ${role}`)] });
-    }
-
-    if (command === "ticket") {
-      if (!isStaff(interaction) && interaction.options.getSubcommand() !== "close") {
-        return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      }
-      const cfg = getGuildData(interaction.guildId);
-      const sub = interaction.options.getSubcommand();
-      if (sub === "setup") {
-        const staff = interaction.options.getRole("staff_role");
-        let categoryId = interaction.channel.parentId || null;
-        if (!categoryId) {
-          const category = await interaction.guild.channels.create({
-            name: "Vyne Tickets",
-            type: ChannelType.GuildCategory,
-            reason: `Vyne ticket system setup by ${interaction.user.tag}`
-          });
-          categoryId = category.id;
-        }
-        cfg.tickets = { enabled: true, categoryId, staffRoleId: staff.id };
-        writeJSON(FILES.config, db.config);
-        return safeReply(interaction, { embeds: [success("Tickets configured", `Staff role: ${staff}\nCategory: <#${categoryId}>`)] });
-      }
-      if (sub === "panel") {
-        if (!cfg.tickets.enabled) return safeReply(interaction, { embeds: [errorEmbed("Not configured", "Run `/ticket setup` first.")], flags: MessageFlags.Ephemeral });
-        const b = new ButtonBuilder().setCustomId("vyne_ticket_create").setLabel("Create Ticket").setEmoji("🎫").setStyle(ButtonStyle.Primary);
-        await interaction.channel.send({ embeds: [embed("🎫 Support Center", "Need help? Create a private ticket and our staff will assist you.", COLORS.primary)], components: [new ActionRowBuilder().addComponents(b)] });
-        return safeReply(interaction, { embeds: [success("Ticket panel sent", "The panel is ready.")], flags: MessageFlags.Ephemeral });
-      }
-      if (sub === "close") {
-        const ticket = db.tickets[interaction.guildId]?.[interaction.channelId];
-        if (!ticket) return safeReply(interaction, { embeds: [errorEmbed("Not a ticket", "This is not an active ticket.")], flags: MessageFlags.Ephemeral });
-        ticket.open = false;
-        writeJSON(FILES.tickets, db.tickets);
-        await interaction.channel.send({ embeds: [success("Ticket closed", "Deleting channel in 5 seconds.")] });
-        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
-        return;
+      if (interaction.customId.startsWith("automod_adv_")) {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        if(interaction.customId==="automod_adv_thresholds") return interaction.showModal(buildAutomodThresholdModal());
+        if(interaction.customId==="automod_adv_words") return interaction.showModal(buildAutomodWordsModal());
+        if(interaction.customId==="automod_adv_domains") return interaction.showModal(buildAutomodDomainsModal());
+        return interaction.update(automodAdvancedPanel(interaction.guildId));
       }
     }
 
-    if (command === "announce") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const title = interaction.options.getString("title");
-      const message = interaction.options.getString("message");
-      const channel = interaction.options.getChannel("channel") || interaction.channel;
-      await channel.send({ embeds: [embed(`📢 ${title}`, message, COLORS.primary)] });
-      return safeReply(interaction, { embeds: [success("Announcement sent", `Posted in ${channel}.`)], flags: MessageFlags.Ephemeral });
-    }
-
-    if (command === "remind") {
-      const duration = parseDuration(interaction.options.getString("time"));
-      if (!duration) return safeReply(interaction, { embeds: [errorEmbed("Invalid time", "Use `10m`, `2h`, `1d`, etc.")], flags: MessageFlags.Ephemeral });
-      const message = interaction.options.getString("message");
-      if (!db.reminders[interaction.guildId]) db.reminders[interaction.guildId] = [];
-      db.reminders[interaction.guildId].push({ userId: interaction.user.id, channelId: interaction.channelId, message, at: Date.now() + duration });
-      writeJSON(FILES.reminders, db.reminders);
-      return safeReply(interaction, { embeds: [success("Reminder created", `I'll remind you <t:${Math.floor((Date.now()+duration)/1000)}:R>.`)] });
-    }
-
-    if (command === "notify") {
-      const cfg = getGuildData(interaction.guildId);
-      const sub = interaction.options.getSubcommand();
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      if (sub === "set") {
-        cfg.notifications.channelId = interaction.options.getChannel("channel").id;
-        writeJSON(FILES.config, db.config);
-        return safeReply(interaction, { embeds: [success("Notifications configured", `Notification channel: <#${cfg.notifications.channelId}>`)] });
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith("ticket_questions_")) {
+        const categoryId=interaction.customId.slice("ticket_questions_".length);
+        const questions=getGuildData(interaction.guildId).tickets.premium.questions.slice(0,5);
+        const answers={}; questions.forEach((q,i)=>{answers[q.label]=interaction.fields.getTextInputValue(`question_${i}`);});
+        try { const ch=await createTicketChannel(interaction,categoryId,answers); return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${ch}.`)],flags:MessageFlags.Ephemeral}); }
+        catch(err){ return safeReply(interaction,{embeds:[errorEmbed("Ticket creation failed",truncate(err?.message||err,1200))],flags:MessageFlags.Ephemeral}); }
       }
-      if (!cfg.notifications.channelId) return safeReply(interaction, { embeds: [errorEmbed("Not configured", "Set a notification channel first.")], flags: MessageFlags.Ephemeral });
-      const ch = interaction.guild.channels.cache.get(cfg.notifications.channelId);
-      await ch?.send({ embeds: [infoEmbed("🔔 Vyne Notification", "Notification system is working correctly.")] });
-      return safeReply(interaction, { embeds: [success("Test sent", "Notification delivered.")], flags: MessageFlags.Ephemeral });
-    }
-
-    if (command === "level") {
-      const user = interaction.options.getUser("user") || interaction.user;
-      const data = db.levels[interaction.guildId]?.[user.id] || { xp: 0, level: 0 };
-      return safeReply(interaction, { embeds: [embed("⭐ Level", `<@${user.id}> is **Level ${data.level}** with **${data.xp} XP**.`, COLORS.primary)] });
-    }
-
-    if (command === "leaderboard") {
-      const list = Object.entries(db.levels[interaction.guildId] || {}).sort((a,b) => (b[1].level*100+b[1].xp)-(a[1].level*100+a[1].xp)).slice(0,10);
-      const text = list.length ? list.map(([id,d],i) => `**${i+1}.** <@${id}> — Level ${d.level} • ${d.xp} XP`).join("\n") : "No XP data yet.";
-      return safeReply(interaction, { embeds: [embed("🏆 XP Leaderboard", text, COLORS.primary)] });
-    }
-
-    if (command === "balance" || command === "daily" || command === "pay") {
-      if (!db.economy[interaction.guildId]) db.economy[interaction.guildId] = {};
-      const get = id => db.economy[interaction.guildId][id] || { coins: 0, lastDaily: 0 };
-      if (command === "balance") {
-        const user = interaction.options.getUser("user") || interaction.user;
-        const d = get(user.id);
-        return safeReply(interaction, { embeds: [embed("💰 Balance", `<@${user.id}> has **${d.coins.toLocaleString()}** coins.`, COLORS.warning)] });
+      if (interaction.customId === "ticket_close_reason_modal") { await deferOnce(interaction, MessageFlags.Ephemeral); return closeTicketInteraction(interaction,interaction.fields.getTextInputValue("reason")); }
+      if (interaction.customId === "ticket_builder_edit_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium;
+        p.panelTitle=interaction.fields.getTextInputValue("panel_title"); p.panelDescription=interaction.fields.getTextInputValue("panel_description"); p.buttonLabel=interaction.fields.getTextInputValue("button_label"); p.buttonEmoji=interaction.fields.getTextInputValue("button_emoji")||"🎫"; p.panelImage=interaction.fields.getTextInputValue("panel_image")||null;
+        getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
+        return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
-      if (command === "daily") {
-        const d = get(interaction.user.id);
-        if (Date.now() - d.lastDaily < 86400000) return safeReply(interaction, { embeds: [warningEmbed("Daily already claimed", `Try again <t:${Math.floor((d.lastDaily+86400000)/1000)}:R>.`)] });
-        d.coins += 250;
-        d.lastDaily = Date.now();
-        db.economy[interaction.guildId][interaction.user.id] = d;
-        writeJSON(FILES.economy, db.economy);
-        return safeReply(interaction, { embeds: [success("Daily claimed", "You received **250** coins.")] });
+      if (interaction.customId === "ticket_builder_category_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium; if(p.categories.length>=10) return safeReply(interaction,{embeds:[errorEmbed("Category limit","You can have up to 10 categories.")],flags:MessageFlags.Ephemeral});
+        p.categories.push({id:`cat_${Date.now().toString(36)}`,name:interaction.fields.getTextInputValue("category_name"),description:interaction.fields.getTextInputValue("category_description"),emoji:interaction.fields.getTextInputValue("category_emoji")||"🎫"});
+        getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
+        return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
-      const user = interaction.options.getUser("user");
-      const amount = interaction.options.getInteger("amount");
-      if (user.id === interaction.user.id) return safeReply(interaction, { embeds: [errorEmbed("Invalid recipient", "You cannot pay yourself.")], flags: MessageFlags.Ephemeral });
-      const sender = get(interaction.user.id);
-      const receiver = get(user.id);
-      if (sender.coins < amount) return safeReply(interaction, { embeds: [errorEmbed("Insufficient funds", `You only have **${sender.coins}** coins.`)], flags: MessageFlags.Ephemeral });
-      sender.coins -= amount; receiver.coins += amount;
-      db.economy[interaction.guildId][interaction.user.id] = sender;
-      db.economy[interaction.guildId][user.id] = receiver;
-      writeJSON(FILES.economy, db.economy);
-      return safeReply(interaction, { embeds: [success("Payment sent", `Sent **${amount}** coins to <@${user.id}>.`)] });
-    }
-
-    if (command === "giveaway") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const sub = interaction.options.getSubcommand();
-      if (sub === "start") {
-        const duration = interaction.options.getInteger("duration") * 1000;
-        const winners = interaction.options.getInteger("winners");
-        const prize = interaction.options.getString("prize");
-        const e = embed("🎉 Giveaway", `React with 🎉 to enter!\n\n**Prize:** ${prize}\n**Winners:** ${winners}\n**Ends:** <t:${Math.floor((Date.now()+duration)/1000)}:R>`, COLORS.primary);
-        const msg = await interaction.channel.send({ embeds: [e] });
-        await msg.react("🎉");
-        if (!db.giveaways[interaction.guildId]) db.giveaways[interaction.guildId] = {};
-        db.giveaways[interaction.guildId][msg.id] = { channelId: interaction.channelId, prize, winners, endAt: Date.now()+duration, ended: false };
-        writeJSON(FILES.giveaways, db.giveaways);
-        return safeReply(interaction, { embeds: [success("Giveaway started", `Giveaway ID: \`${msg.id}\``)], flags: MessageFlags.Ephemeral });
+      if (interaction.customId === "ticket_builder_question_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium; if(p.questions.length>=5) return safeReply(interaction,{embeds:[errorEmbed("Question limit","Discord modals support up to 5 ticket questions.")],flags:MessageFlags.Ephemeral});
+        const label=interaction.fields.getTextInputValue("question_label"); const placeholder=interaction.fields.getTextInputValue("question_placeholder")||"Type your answer..."; const required=!["no","false","0"].includes((interaction.fields.getTextInputValue("question_required")||"yes").toLowerCase());
+        p.questions.push({label,placeholder,required}); getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
+        return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
-
-      const messageId = interaction.options.getString("message_id");
-      const g = db.giveaways[interaction.guildId]?.[messageId];
-      if (!g) return safeReply(interaction, { embeds: [errorEmbed("Giveaway not found", "I couldn't find that giveaway.")], flags: MessageFlags.Ephemeral });
-      if (sub === "reroll" && !g.ended) {
-        return safeReply(interaction, { embeds: [warningEmbed("Giveaway still active", "End the giveaway before rerolling its winners.")], flags: MessageFlags.Ephemeral });
+      if (interaction.customId === "welcome_advanced_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const w=getGuildData(interaction.guildId).welcome; w.advanced=true; w.enabled=true;
+        w.channelId=w.channelId||interaction.channelId; w.title=interaction.fields.getTextInputValue("welcome_title"); w.message=interaction.fields.getTextInputValue("welcome_message"); w.imageUrl=interaction.fields.getTextInputValue("welcome_image")||null;
+        const color=(interaction.fields.getTextInputValue("welcome_color")||"").replace(/^#/,""); if(/^[0-9a-fA-F]{6}$/.test(color)) w.color=parseInt(color,16);
+        const seconds=Number(interaction.fields.getTextInputValue("welcome_delete")||0); w.deleteAfterMs=Number.isFinite(seconds)&&seconds>0?seconds*1000:0;
+        writeJSON(FILES.config,db.config);
+        return safeReply(interaction,{embeds:[success("Advanced welcome saved",`Welcome is active in <#${w.channelId}>.`)]});
       }
-      const ch = interaction.guild.channels.cache.get(g.channelId);
-      const msg = await ch?.messages.fetch(messageId).catch(() => null);
-      if (!msg) return safeReply(interaction, { embeds: [errorEmbed("Message missing", "The giveaway message no longer exists.")], flags: MessageFlags.Ephemeral });
-      const users = await msg.reactions.cache.get("🎉")?.users.fetch().catch(() => new Collection()) || new Collection();
-      const entries = users.filter(u => !u.bot).map(u => u);
-      if (!entries.length) return safeReply(interaction, { embeds: [warningEmbed("No entries", "There are no eligible entrants.")], flags: MessageFlags.Ephemeral });
-      const picks = [];
-      while (picks.length < Math.min(g.winners, entries.length)) {
-        const pick = entries[Math.floor(Math.random() * entries.length)];
-        if (!picks.some(u => u.id === pick.id)) picks.push(pick);
+      if (interaction.customId === "automod_adv_thresholds_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        const a=getGuildData(interaction.guildId).automod;
+        a.spamMessages=Math.max(2,Number(interaction.fields.getTextInputValue("spam_messages"))||6); a.spamWindow=Math.max(1000,Number(interaction.fields.getTextInputValue("spam_window"))||7000); a.maxMentions=Math.max(1,Number(interaction.fields.getTextInputValue("max_mentions"))||5); a.maxEmoji=Math.max(1,Number(interaction.fields.getTextInputValue("max_emoji"))||12); a.maxCapsPercent=Math.min(100,Math.max(50,Number(interaction.fields.getTextInputValue("caps_percent"))||75));
+        writeJSON(FILES.config,db.config); return safeReply(interaction,automodAdvancedPanel(interaction.guildId));
       }
-      if (sub === "end") g.ended = true;
-      writeJSON(FILES.giveaways, db.giveaways);
-      if (sub === "reroll") {
-        await ch.send({ embeds: [success("🎉 Giveaway rerolled", picks.map(u => `<@${u.id}>`).join(", ") + ` won **${g.prize}**.`)] });
-      } else {
-        await ch.send({ embeds: [success("🎉 Giveaway ended", picks.map(u => `<@${u.id}>`).join(", ") + ` won **${g.prize}**.`)] });
+      if (interaction.customId === "automod_adv_words_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        getGuildData(interaction.guildId).automod.blockedWords=interaction.fields.getTextInputValue("words").split(",").map(x=>x.trim()).filter(Boolean).slice(0,100); writeJSON(FILES.config,db.config); return safeReply(interaction,automodAdvancedPanel(interaction.guildId));
       }
-      return safeReply(interaction, { embeds: [success(sub === "end" ? "Giveaway ended" : "Giveaway rerolled", "Winners have been announced.")], flags: MessageFlags.Ephemeral });
-    }
-
-    if (command === "config") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      return safeReply(interaction, configPanel(interaction.guildId));
-    }
-
-    if (command === "logchannel") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const cfg = getGuildData(interaction.guildId);
-      cfg.logChannelId = interaction.options.getChannel("channel").id;
-      writeJSON(FILES.config, db.config);
-      return safeReply(interaction, { embeds: [success("Log channel set", `Logs will now be sent to <#${cfg.logChannelId}>.`)] });
-    }
-
-    if (command === "modrole") {
-      if (!isStaff(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Permission denied", "You need moderation permissions.")], flags: MessageFlags.Ephemeral });
-      const cfg = getGuildData(interaction.guildId);
-      cfg.modRoleId = interaction.options.getRole("role").id;
-      writeJSON(FILES.config, db.config);
-      return safeReply(interaction, { embeds: [success("Moderator role set", `Moderator role: <@&${cfg.modRoleId}>`)] });
-    }
-
-    if (command === "sys") {
-      if (!ownerOnly(interaction)) return safeReply(interaction, { embeds: [errorEmbed("Owner only", "This command is restricted to the Vyne owner.")], flags: MessageFlags.Ephemeral });
-      const sub = interaction.options.getSubcommand();
-
-      if (sub === "status") {
-        return safeReply(interaction, { embeds: [await hostingStatusEmbed()] });
-      }
-
-      const deployment = await getHostingDeployment();
-
-      if (sub === "info") {
-        const d = await hostingRequest(`/deployments/${deployment.id}`);
-        const e = embed("🖥️ Deployment Information", "Live information from Bot-Hosting.", COLORS.info).addFields(
-          { name: "Name", value: d.name || "Vyne Moderation", inline: true },
-          { name: "State", value: `\`${d.state || "unknown"}\``, inline: true },
-          { name: "Status", value: `\`${d.status || "unknown"}\``, inline: true },
-          { name: "Runtime", value: d.runtime || "N/A", inline: true },
-          { name: "Entry", value: d.entryFile || "N/A", inline: true },
-          { name: "Deployment ID", value: `\`${d.id}\``, inline: false }
-        );
-        return safeReply(interaction, { embeds: [e] });
-      }
-
-      if (sub === "diagnose") {
-        const d = await hostingDiagnose();
-        const logs = Array.isArray(d.logs) ? d.logs.slice(-8).join("\n").slice(0, 3500) : "No log tail.";
-        const e = embed("🩺 Vyne Diagnostic", d.hint || "Diagnostic complete.", d.state === "running" ? COLORS.success : COLORS.danger).addFields(
-          { name: "State", value: `\`${d.state || "unknown"}\``, inline: true },
-          { name: "Installing", value: d.installing ? "Yes" : "No", inline: true },
-          { name: "Resources", value: `RAM ${d.resources?.ramMB ?? "N/A"}MB / ${d.resources?.ramLimitMB ?? "N/A"}MB\nCPU ${d.resources?.cpuPercent ?? "N/A"}%`, inline: true },
-          { name: "Startup", value: `Runtime: ${d.startup?.runtime || "N/A"}\nEntry: ${d.startup?.entryFile || "N/A"}\nCommand: ${d.startup?.startCommand || "N/A"}` },
-          { name: "Recent Logs", value: `\`\`\`\n${logs || "No logs"}\n\`\`\`` }
-        );
-        return safeReply(interaction, { embeds: [e] });
-      }
-
-      if (sub === "logs") {
-        const pattern = interaction.options.getString("pattern") || "error";
-        const data = await hostingRequest(`/deployments/${deployment.id}/logs?pattern=${encodeURIComponent(pattern)}&lines=2000&context=2`);
-        const matches = data.matches || [];
-        const text = matches.length ? matches.slice(0, 8).map(m => `Line ${m.line}: ${m.text}`).join("\n").slice(0, 3800) : "No matching log entries.";
-        return safeReply(interaction, { embeds: [embed("📜 Deployment Logs", `Pattern: \`${pattern}\`\n\n${text}`, matches.length ? COLORS.warning : COLORS.success)] });
-      }
-
-      if (sub === "pull") {
-        const data = await hostingRequest(`/deployments/${deployment.id}/sync`, {
-          method: "POST",
-          body: JSON.stringify({})
-        });
-        return safeReply(interaction, { embeds: [success("GitHub sync complete", `Repository: \`${data.repo || "linked repository"}\`\nBranch: \`${data.branch || "main"}\`\nCommit: \`${data.commit || "updated"}\``)] });
-      }
-
-      if (sub === "restart") {
-        const data = await hostingRequest(`/deployments/${deployment.id}/power`, {
-          method: "POST",
-          body: JSON.stringify({ action: "restart", waitSeconds: 20 })
-        });
-        const ok = data.ok && data.state === "running";
-        return safeReply(interaction, { embeds: [embed(
-          ok ? "🔄 Restart complete" : "⚠️ Restart result",
-          `State: **${data.state || "unknown"}**\n${data.hint || data.reason || ""}`,
-          ok ? COLORS.success : COLORS.warning
-        )] });
+      if (interaction.customId === "automod_adv_domains_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        getGuildData(interaction.guildId).automod.blockedDomains=interaction.fields.getTextInputValue("domains").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean).slice(0,100); writeJSON(FILES.config,db.config); return safeReply(interaction,automodAdvancedPanel(interaction.guildId));
       }
     }
-  } catch (err) {
-    console.error("Interaction error:", err);
-    const msg = err?.message || String(err);
-    return safeReply(interaction, {
-      embeds: [errorEmbed("Something went wrong", `\`${msg.slice(0, 1500)}\``)],
-      flags: MessageFlags.Ephemeral
-    });
+
+    if(!interaction.isChatInputCommand()) return;
+    trackAnalytics(interaction.guildId,"commands");
+    const command=interaction.commandName;
+
+    if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
+    if(command==="ask") return handleAICommand(interaction);
+
+    if(command==="ai"){
+      const sub=interaction.options.getSubcommand(), cfg=getAIConfig(interaction.guildId);
+      if(sub==="status") return safeReply(interaction,{embeds:[aiStatusEmbed(interaction.guildId)],flags:MessageFlags.Ephemeral});
+      if(sub==="clear"){ if(db.ai[interaction.guildId]){delete db.ai[interaction.guildId][interaction.user.id];writeJSON(FILES.ai,db.ai);} return safeReply(interaction,{embeds:[success("AI history cleared","Your conversation history has been cleared.")]}); }
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","Only server staff can enable or disable AI.")],flags:MessageFlags.Ephemeral});
+      cfg.enabled=sub==="enable"; writeJSON(FILES.config,db.config); return safeReply(interaction,{embeds:[success("AI configuration updated",`Vyne AI is now **${cfg.enabled?"enabled":"disabled"}**.`)]});
+    }
+
+    if(command==="help") return sendHelp(interaction,"home");
+    if(command==="ping") return safeReply(interaction,{embeds:[embed("🏓 Pong",`WebSocket latency: **${client.ws.ping}ms**\\nResponse: **Online**`,COLORS.success)]});
+    if(command==="botstats"){await deferOnce(interaction);return interaction.editReply(await botStatsEmbed());}
+
+    if(command==="userinfo"){const u=interaction.options.getUser("user"),m=await interaction.guild.members.fetch(u.id).catch(()=>null);return safeReply(interaction,{embeds:[embed(`👤 ${u.tag}`,"User information.",COLORS.info).setThumbnail(u.displayAvatarURL({size:256})).addFields({name:"ID",value:`\`${u.id}\``,inline:true},{name:"Created",value:`<t:${Math.floor(u.createdTimestamp/1000)}:F>`,inline:true},{name:"Joined",value:m?`<t:${Math.floor(m.joinedTimestamp/1000)}:F>`:"Not in server",inline:true},{name:"Bot",value:u.bot?"Yes":"No",inline:true})]});}
+    if(command==="avatar"){const u=interaction.options.getUser("user");return safeReply(interaction,{embeds:[embed(`🖼️ ${u.tag}`,`[Open full-size avatar](${u.displayAvatarURL({size:4096})})`,COLORS.info).setImage(u.displayAvatarURL({size:1024}))]});}
+    if(command==="serverinfo"){const g=interaction.guild;return safeReply(interaction,{embeds:[embed(`🌐 ${g.name}`,"Server information.",COLORS.info).setThumbnail(g.iconURL({size:256})||null).addFields({name:"Owner",value:`<@${g.ownerId}>`,inline:true},{name:"Members",value:String(g.memberCount),inline:true},{name:"Channels",value:String(g.channels.cache.size),inline:true},{name:"Roles",value:String(g.roles.cache.size),inline:true},{name:"Boosts",value:String(g.premiumSubscriptionCount||0),inline:true})]});}
+    if(command==="servericon"){const url=interaction.guild.iconURL({size:4096});if(!url)return safeReply(interaction,{embeds:[errorEmbed("No icon","This server has no icon.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,{embeds:[embed("🖼️ Server Icon",`[Open full-size](${url})`,COLORS.info).setImage(url)]});}
+    if(command==="serverbanner"){const url=interaction.guild.bannerURL({size:4096});if(!url)return safeReply(interaction,{embeds:[errorEmbed("No banner","This server has no banner.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,{embeds:[embed("🖼️ Server Banner",`[Open full-size](${url})`,COLORS.info).setImage(url)]});}
+    if(command==="channelinfo"){const c=interaction.options.getChannel("channel")||interaction.channel;return safeReply(interaction,{embeds:[embed(`📺 ${c.name}`,"Channel information.",COLORS.info).addFields({name:"ID",value:`\`${c.id}\``,inline:true},{name:"Type",value:String(c.type),inline:true},{name:"Created",value:`<t:${Math.floor(c.createdTimestamp/1000)}:F>`,inline:true})]});}
+    if(command==="roleinfo"){const r=interaction.options.getRole("role");return safeReply(interaction,{embeds:[embed(`🎨 ${r.name}`,"Role information.",r.color||COLORS.info).addFields({name:"ID",value:`\`${r.id}\``,inline:true},{name:"Position",value:String(r.position),inline:true},{name:"Members",value:String(r.members.size),inline:true},{name:"Mentionable",value:r.mentionable?"Yes":"No",inline:true},{name:"Hoisted",value:r.hoist?"Yes":"No",inline:true})]});}
+    if(command==="roles"){const roles=interaction.guild.roles.cache.filter(r=>r.id!==interaction.guild.id).sort((a,b)=>b.position-a.position);return safeReply(interaction,{embeds:[embed("🎨 Server Roles",[...roles.values()].slice(0,50).map(r=>`${r} — \`${r.members.size}\``).join("\\n")||"No roles.",COLORS.info)]});}
+    if(command==="permissions")return safeReply(interaction,{embeds:[embed("🔑 Your Permissions",interaction.member.permissions.toArray().map(p=>`\`${p}\``).join(", ")||"None",COLORS.info)]});
+    if(command==="joininfo"){const u=interaction.options.getUser("user"),m=await interaction.guild.members.fetch(u.id);return safeReply(interaction,{embeds:[embed("📅 Join Information",`<@${u.id}> joined this server <t:${Math.floor(m.joinedTimestamp/1000)}:R>.`,COLORS.info)]});}
+
+    if(command==="automod"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,automodPanel(interaction.guildId));}
+    if(command==="automodpro"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);return safeReply(interaction,automodAdvancedPanel(interaction.guildId));}
+    if(command==="antinuke"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,antiNukePanel(interaction.guildId));}
+    if(command==="antinukewhitelist"){
+      if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);
+      const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId).antinuke,u=interaction.options.getUser("user");
+      if(sub==="add"){if(!cfg.whitelistUserIds.includes(u.id))cfg.whitelistUserIds.push(u.id);writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Whitelist updated",`<@${u.id}> is now trusted by Anti-Nuke.`)]});}
+      if(sub==="remove"){cfg.whitelistUserIds=cfg.whitelistUserIds.filter(id=>id!==u.id);writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Whitelist updated",`<@${u.id}> was removed from the whitelist.`)]});}
+      return safeReply(interaction,{embeds:[infoEmbed("☢️ Anti-Nuke Whitelist",cfg.whitelistUserIds.length?cfg.whitelistUserIds.map(id=>`• <@${id}>`).join("\\n"):"No whitelisted users.")]});
+    }
+
+    if(command==="raid"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);if(sub==="status")return safeReply(interaction,{embeds:[infoEmbed("🚨 Raid Protection",`Status: **${cfg.raid.enabled?"Enabled":"Disabled"}**\\nJoin limit: **${cfg.raid.joinLimit}**\\nWindow: **${cfg.raid.window}ms**\\nAccount age: **${fmtDuration(cfg.raid.accountAge)}**`)]});cfg.raid.enabled=sub==="on";writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Raid protection updated",`Raid protection is now **${cfg.raid.enabled?"enabled":"disabled"}**.`)]});}
+
+    if(command==="verify"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);if(sub==="disable"){cfg.verification.enabled=false;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Verification disabled","Verification has been disabled.")]});}const role=interaction.options.getRole("role");if(!canBotManageRole(interaction.guild,role))return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the verification role.")],flags:MessageFlags.Ephemeral});const days=interaction.options.getInteger("account_age_days")||0;cfg.verification={enabled:true,channelId:interaction.channelId,roleId:role.id,accountAge:days*86400000};writeJSON(FILES.config,db.config);await interaction.channel.send({embeds:[embed("🔐 Server Verification",`Click below to verify.${days?`\\n\\nMinimum account age: **${days} days**`:""}`,COLORS.info)],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("vyne_verify").setLabel("Verify").setEmoji("🔐").setStyle(ButtonStyle.Success))]});return safeReply(interaction,{embeds:[success("Verification configured",`Verification role: ${role}`)]});}
+
+    if(command==="ticket"){
+      const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);
+      if(sub==="close"){ await deferOnce(interaction, MessageFlags.Ephemeral); return closeTicketInteraction(interaction,"No reason provided"); }
+      if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      if(sub==="setup"){const staff=interaction.options.getRole("staff_role");await deferOnce(interaction);let categoryId=cfg.tickets.categoryId||interaction.channel.parentId||null;if(!categoryId){const category=await interaction.guild.channels.create({name:"Vyne Tickets",type:ChannelType.GuildCategory,reason:"Vyne ticket setup"});categoryId=category.id;}cfg.tickets.enabled=true;cfg.tickets.categoryId=categoryId;cfg.tickets.staffRoleId=staff.id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Tickets configured",`Staff role: ${staff}\\nCategory: <#${categoryId}>\\n\\nFree users now get the pre-made panel.`)]});}
+      if(sub==="panel"){if(!cfg.tickets.enabled)return safeReply(interaction,{embeds:[errorEmbed("Not configured","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});await interaction.channel.send(ticketPanelPayload(interaction.guildId));return safeReply(interaction,{embeds:[success("Ticket panel sent","The panel is ready.")],flags:MessageFlags.Ephemeral});}
+      if(sub==="builder"){if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);cfg.tickets.advancedEnabled=true;writeJSON(FILES.config,db.config);return safeReply(interaction,ticketBuilderPanel(interaction.guildId));}
+    }
+
+    if(command==="welcome"){
+      if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand(),w=getGuildData(interaction.guildId).welcome;
+      if(sub==="setup"){w.enabled=true;w.advanced=false;w.channelId=interaction.options.getChannel("channel").id;w.message=interaction.options.getString("message")||"Welcome to **{server}**, {user}! You are member **#{membercount}**.";writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Welcome configured",`Welcome messages will be sent to <#${w.channelId}>.`)]});}
+      if(sub==="advanced"){if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);w.channelId=w.channelId||interaction.channelId;return interaction.showModal(buildWelcomeModal());}
+      if(sub==="preview"){if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);const m=await interaction.guild.members.fetch(interaction.user.id);return safeReply(interaction,{embeds:[welcomePreviewEmbed(m)],flags:MessageFlags.Ephemeral});}
+      w.enabled=false;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Welcome disabled","Welcome messages have been disabled.")]});
+    }
+
+    if(command==="voicemaster"){
+      if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);
+      const sub=interaction.options.getSubcommand(),v=getGuildData(interaction.guildId).voicemaster;
+      if(sub==="setup"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});await deferOnce(interaction);let hub=interaction.options.getChannel("hub"),cat=interaction.options.getChannel("category"),control=interaction.options.getChannel("control_channel");if(!cat)cat=await interaction.guild.channels.create({name:"Vyne Voice",type:ChannelType.GuildCategory,reason:"Vyne VoiceMaster setup"});if(!hub)hub=await interaction.guild.channels.create({name:"➕ Join to Create",type:ChannelType.GuildVoice,parent:cat.id,reason:"Vyne VoiceMaster setup"});v.enabled=true;v.categoryId=cat.id;v.hubChannelId=hub.id;v.controlChannelId=control?.id||v.controlChannelId||interaction.channelId;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("VoiceMaster configured",`Hub: ${hub}\\nCategory: <#${cat.id}>`)]});}
+      if(sub==="panel")return safeReply(interaction,{embeds:[embed("🎙️ VoiceMaster","Join the configured hub to create your private room. Then use `/voicemaster rename`, `/limit`, `/lock`, `/unlock`, `/claim` or `/delete`.",COLORS.cyan)]});
+      const voice=interaction.member?.voice?.channel;const temp=voice?getTempVoice(interaction.guildId,voice.id):null;
+      if(sub==="claim"){if(!voice||!temp)return safeReply(interaction,{embeds:[errorEmbed("No room","Join a temporary room first.")],flags:MessageFlags.Ephemeral});if(temp.ownerId!==interaction.user.id&&voice.members.size===1){temp.ownerId=interaction.user.id;tempVoiceOwners.set(voice.id,temp);return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")]});}if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Claim unavailable","This room is still owned by another user.")]});return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")]});}
+      if(!temp)return safeReply(interaction,{embeds:[errorEmbed("No temporary room","Join your temporary VoiceMaster room first.")],flags:MessageFlags.Ephemeral});
+      if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Not the owner","Only the room owner can use this control.")],flags:MessageFlags.Ephemeral});
+      if(sub==="rename"){await voice.setName(interaction.options.getString("name"));return safeReply(interaction,{embeds:[success("Voice renamed",`Room renamed to **${voice.name}**.`)]});}
+      if(sub==="limit"){const n=interaction.options.getInteger("users");await voice.setUserLimit(n);return safeReply(interaction,{embeds:[success("Voice limit updated",`Limit: **${n}**.`)]});}
+      if(sub==="lock"){await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:false});return safeReply(interaction,{embeds:[success("Voice locked","New users can no longer connect.")]});}
+      if(sub==="unlock"){await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:null});return safeReply(interaction,{embeds:[success("Voice unlocked","Users can connect again.")]});}
+      if(sub==="delete"){tempVoiceOwners.delete(voice.id);await voice.delete("Vyne VoiceMaster delete");return safeReply(interaction,{embeds:[success("Voice deleted","Your temporary room was deleted.")],flags:MessageFlags.Ephemeral});}
+    }
+
+    if(command==="analytics"){
+      if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);
+      const a=analyticsFor(interaction.guildId),cases=(db.cases[interaction.guildId]||[]).length,warnings=Object.values(db.warnings[interaction.guildId]||{}).reduce((n,x)=>n+x.length,0);
+      return safeReply(interaction,{embeds:[embed("📊 Vyne Analytics","Premium server activity overview.",COLORS.info).addFields(
+        {name:"Messages",value:a.messages.toLocaleString(),inline:true},{name:"Commands",value:a.commands.toLocaleString(),inline:true},{name:"Joins",value:a.joins.toLocaleString(),inline:true},{name:"Leaves",value:a.leaves.toLocaleString(),inline:true},
+        {name:"Cases",value:String(cases),inline:true},{name:"Warnings",value:String(warnings),inline:true},{name:"Members",value:interaction.guild.memberCount.toLocaleString(),inline:true},{name:"Channels",value:interaction.guild.channels.cache.size.toLocaleString(),inline:true}
+      )]});
+    }
+
+    if(command==="poll"){
+      const q=interaction.options.getString("question"),opts=[1,2,3,4,5].map(i=>interaction.options.getString(`option${i}`)).filter(Boolean),nums=["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"];
+      const msg=await interaction.channel.send({embeds:[embed("📊 Poll",`**${q}**\\n\\n${opts.map((o,i)=>`${nums[i]} ${o}`).join("\\n")}`,COLORS.primary)]});for(let i=0;i<opts.length;i++)await msg.react(nums[i]).catch(()=>{});
+      return safeReply(interaction,{embeds:[success("Poll created",`Poll message: ${msg}`)],flags:MessageFlags.Ephemeral});
+    }
+
+    if(command==="announce"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const ch=interaction.options.getChannel("channel")||interaction.channel;await ch.send({embeds:[embed(`📢 ${interaction.options.getString("title")}`,interaction.options.getString("message"),COLORS.primary)]});return safeReply(interaction,{embeds:[success("Announcement sent",`Posted in ${ch}.`)],flags:MessageFlags.Ephemeral});}
+    if(command==="remind"){const d=parseDuration(interaction.options.getString("time"));if(!d)return safeReply(interaction,{embeds:[errorEmbed("Invalid time","Use `10m`, `2h`, `1d`, etc.")],flags:MessageFlags.Ephemeral});const at=Date.now()+d;if(!db.reminders[interaction.guildId])db.reminders[interaction.guildId]=[];db.reminders[interaction.guildId].push({userId:interaction.user.id,channelId:interaction.channelId,message:interaction.options.getString("message"),at});writeJSON(FILES.reminders,db.reminders);return safeReply(interaction,{embeds:[success("Reminder created",`I'll remind you <t:${Math.floor(at/1000)}:R>.`)]});}
+
+    if(command==="notify"){
+      if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);
+      if(sub==="set"){cfg.notifications.channelId=interaction.options.getChannel("channel").id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Notifications configured",`Channel: <#${cfg.notifications.channelId}>`)]});}
+      if(sub==="test"){if(!cfg.notifications.channelId)return safeReply(interaction,{embeds:[errorEmbed("Not configured","Set a notification channel first.")],flags:MessageFlags.Ephemeral});const ch=interaction.guild.channels.cache.get(cfg.notifications.channelId);await ch?.send({embeds:[infoEmbed("🔔 Vyne Notification","Notification system is working.")]}).catch(()=>{});return safeReply(interaction,{embeds:[success("Test sent","Notification delivered.")],flags:MessageFlags.Ephemeral});}
+      if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);
+      if(sub==="list"){return safeReply(interaction,{embeds:[infoEmbed("🔔 Notification Feeds",cfg.notifications.feeds.length?cfg.notifications.feeds.map(f=>`**${f.id}** • ${f.type} • <#${f.channelId}>\\n${f.url}`).join("\\n\\n"):"No feeds configured.")]});}
+      if(sub==="remove"){const id=interaction.options.getString("id"),before=cfg.notifications.feeds.length;cfg.notifications.feeds=cfg.notifications.feeds.filter(f=>f.id!==id);writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Feed removed",before===cfg.notifications.feeds.length?"No matching feed.":`Removed **${id}**.`)]});}
+      const type=sub==="youtube"?"youtube":"reddit",url=interaction.options.getString("url"),channel=interaction.options.getChannel("channel"),id=`${Date.now().toString(36)}${Math.random().toString(36).slice(2,6)}`;
+      const feed={id,type,url,channelId:channel.id,lastItemId:null,createdAt:Date.now()};cfg.notifications.feeds.push(feed);const item=await fetchNotificationFeed(feed).catch(()=>null);if(item){feed.lastItemId=item.id;}writeJSON(FILES.config,db.config);
+      return safeReply(interaction,{embeds:[success("Feed added",`**Type:** ${type}\\n**Feed ID:** \`${id}\`\\n**Channel:** ${channel}\\n\\nThe current item was saved so Vyne won't spam old content.`)]});
+    }
+
+    if(command==="level"){const u=interaction.options.getUser("user")||interaction.user,d=db.levels[interaction.guildId]?.[u.id]||{xp:0,level:0};return safeReply(interaction,{embeds:[embed("⭐ Level",`<@${u.id}> is **Level ${d.level}** with **${d.xp} XP**.`,COLORS.primary)]});}
+    if(command==="leaderboard"){const list=Object.entries(db.levels[interaction.guildId]||{}).sort((a,b)=>(b[1].level*100+b[1].xp)-(a[1].level*100+a[1].xp)).slice(0,10);return safeReply(interaction,{embeds:[embed("🏆 XP Leaderboard",list.length?list.map(([id,d],i)=>`**${i+1}.** <@${id}> — Level ${d.level} • ${d.xp} XP`).join("\\n"):"No XP data yet.",COLORS.primary)]});}
+    if(["balance","daily","pay"].includes(command)){if(!db.economy[interaction.guildId])db.economy[interaction.guildId]={};const get=id=>db.economy[interaction.guildId][id]||{coins:0,lastDaily:0};if(command==="balance"){const u=interaction.options.getUser("user")||interaction.user,d=get(u.id);return safeReply(interaction,{embeds:[embed("💰 Balance",`<@${u.id}> has **${d.coins.toLocaleString()}** coins.`,COLORS.warning)]});}if(command==="daily"){const d=get(interaction.user.id);if(Date.now()-d.lastDaily<86400000)return safeReply(interaction,{embeds:[warningEmbed("Daily already claimed",`Try again <t:${Math.floor((d.lastDaily+86400000)/1000)}:R>.`)]});d.coins+=250;d.lastDaily=Date.now();db.economy[interaction.guildId][interaction.user.id]=d;writeJSON(FILES.economy,db.economy);return safeReply(interaction,{embeds:[success("Daily claimed","You received **250** coins.")]});}const u=interaction.options.getUser("user"),amount=interaction.options.getInteger("amount"),sender=get(interaction.user.id),receiver=get(u.id);if(u.id===interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Invalid recipient","You cannot pay yourself.")],flags:MessageFlags.Ephemeral});if(sender.coins<amount)return safeReply(interaction,{embeds:[errorEmbed("Insufficient funds",`You only have **${sender.coins}** coins.`)],flags:MessageFlags.Ephemeral});sender.coins-=amount;receiver.coins+=amount;db.economy[interaction.guildId][interaction.user.id]=sender;db.economy[interaction.guildId][u.id]=receiver;writeJSON(FILES.economy,db.economy);return safeReply(interaction,{embeds:[success("Payment sent",`Sent **${amount}** coins to <@${u.id}>.`)]});}
+
+    if(command==="giveaway"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand();if(sub==="start"){const dur=interaction.options.getInteger("duration")*1000,w=interaction.options.getInteger("winners"),prize=interaction.options.getString("prize"),e=embed("🎉 Giveaway",`React with 🎉 to enter!\\n\\n**Prize:** ${prize}\\n**Winners:** ${w}\\n**Ends:** <t:${Math.floor((Date.now()+dur)/1000)}:R>`,COLORS.primary),msg=await interaction.channel.send({embeds:[e]});await msg.react("🎉");if(!db.giveaways[interaction.guildId])db.giveaways[interaction.guildId]={};db.giveaways[interaction.guildId][msg.id]={channelId:interaction.channelId,prize,winners:w,endAt:Date.now()+dur,ended:false};writeJSON(FILES.giveaways,db.giveaways);return safeReply(interaction,{embeds:[success("Giveaway started",`Giveaway ID: \`${msg.id}\``)],flags:MessageFlags.Ephemeral});}const id=interaction.options.getString("message_id"),g=db.giveaways[interaction.guildId]?.[id];if(!g)return safeReply(interaction,{embeds:[errorEmbed("Giveaway not found","I couldn't find that giveaway.")],flags:MessageFlags.Ephemeral});if(sub==="reroll"&&!g.ended)return safeReply(interaction,{embeds:[warningEmbed("Giveaway still active","End the giveaway before rerolling.")],flags:MessageFlags.Ephemeral});const ch=interaction.guild.channels.cache.get(g.channelId),msg=await ch?.messages.fetch(id).catch(()=>null);if(!msg)return safeReply(interaction,{embeds:[errorEmbed("Message missing","The giveaway message no longer exists.")],flags:MessageFlags.Ephemeral});const users=await msg.reactions.cache.get("🎉")?.users.fetch().catch(()=>new Collection())||new Collection(),entries=users.filter(u=>!u.bot).map(u=>u);if(!entries.length)return safeReply(interaction,{embeds:[warningEmbed("No entries","There are no eligible entrants.")],flags:MessageFlags.Ephemeral});const picks=[];while(picks.length<Math.min(g.winners,entries.length)){const pick=entries[Math.floor(Math.random()*entries.length)];if(!picks.some(u=>u.id===pick.id))picks.push(pick);}if(sub==="end")g.ended=true;writeJSON(FILES.giveaways,db.giveaways);await ch.send({embeds:[success(sub==="end"?"🎉 Giveaway ended":"🎉 Giveaway rerolled",`${picks.map(u=>`<@${u.id}>`).join(", ")} won **${g.prize}**.`)]});return safeReply(interaction,{embeds:[success("Giveaway processed","Winners have been announced.")],flags:MessageFlags.Ephemeral});}
+
+    if(command==="config"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,configPanel(interaction.guildId));}
+    if(command==="logchannel"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const cfg=getGuildData(interaction.guildId);cfg.logChannelId=interaction.options.getChannel("channel").id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Log channel set",`Logs will be sent to <#${cfg.logChannelId}>.`)]});}
+    if(command==="modrole"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const cfg=getGuildData(interaction.guildId);cfg.modRoleId=interaction.options.getRole("role").id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Moderator role set",`Moderator role: <@&${cfg.modRoleId}>`)]});}
+
+    if(command==="premium"||command==="noprefix"){
+      if(!ownerOnly(interaction))return safeReply(interaction,{embeds:[ownerGuardEmbed()],flags:MessageFlags.Ephemeral});
+      const isP=command==="premium",store=isP?db.premium:db.noprefix,file=isP?FILES.premium:FILES.noprefix,sub=interaction.options.getSubcommand(),group=interaction.options.getSubcommandGroup(false);
+      const word=isP?"Premium":"No-Prefix";
+      if(!group&&sub==="status"){const status=isP?premiumStatusFor(interaction.user.id,interaction.guildId):noPrefixStatusFor(interaction.user.id,interaction.guildId);return safeReply(interaction,{embeds:[embed(`${isP?"◆":"⚡"} ${word} Status`,status?`${status.scope} subscription\\n\\n${subscriptionText(status.record)}`:`${word} is not active for you or this server.`,isP?COLORS.primary:COLORS.warning)]});}
+      if(group==="user"){const u=interaction.options.getUser("user");if(sub==="add"){const id=`${isP?"premium":"noprefix"}_plan_user_${u.id}`;return safeReply(interaction,{embeds:[embed(isP?"◆ Grant Vyne Premium":"⚡ Grant Vyne No-Prefix",`Select a duration for <@${u.id}>.\\n\\nAll plans have the same ${word} access; only duration changes.`,isP?COLORS.primary:COLORS.warning)],components:[new ActionRowBuilder().addComponents(planMenu(id,isP?"Select Premium duration":"Select No-Prefix duration",isP?"premium":"noprefix"))],flags:MessageFlags.Ephemeral});}if(sub==="remove"){const ok=revokeSubscription(store,file,"users",u.id);return safeReply(interaction,{embeds:[success(`${word} access updated`,ok?`Removed ${word} from <@${u.id}>.`:`<@${u.id}> did not have active ${word}.`)]});}if(sub==="status"){const r=getSubscription(store,"users",u.id);return safeReply(interaction,{embeds:[embed(`${isP?"◆":"⚡"} ${word} Status`,r?`<@${u.id}>\\n\\n${subscriptionText(r)}`:`<@${u.id}> does not have active ${word}.`,isP?COLORS.primary:COLORS.warning)]});}const entries=Object.entries(store.users||{});return safeReply(interaction,{embeds:[infoEmbed(`${word} Users`,entries.length?entries.map(([id,r])=>`• <@${id}> — ${PLAN_DEFINITIONS[r.plan]?.label||r.plan} — ${r.expiresAt===null?"Lifetime":fmtDate(r.expiresAt)}`).join("\\n"):`No active ${word} user subscriptions.`)]});}
+      if(group==="server"){const id=interaction.options.getString("server_id")||interaction.guildId;if(sub==="add"){const custom=`${isP?"premium":"noprefix"}_plan_server_${id}`;return safeReply(interaction,{embeds:[embed(isP?"◆ Grant Server Premium":"⚡ Grant Server No-Prefix",`Select a duration for **${client.guilds.cache.get(id)?.name||id}**.`,isP?COLORS.primary:COLORS.warning)],components:[new ActionRowBuilder().addComponents(planMenu(custom,isP?"Select Premium duration":"Select No-Prefix duration",isP?"premium":"noprefix"))],flags:MessageFlags.Ephemeral});}if(sub==="remove"){const ok=revokeSubscription(store,file,"guilds",id);return safeReply(interaction,{embeds:[success(`${word} access updated`,ok?`Removed ${word} from \`${id}\`.`:`No active ${word} found for \`${id}\`.`)]});}if(sub==="status"){const r=getSubscription(store,"guilds",id);return safeReply(interaction,{embeds:[embed(`${isP?"◆":"⚡"} Server ${word}`,r?`Server: **${client.guilds.cache.get(id)?.name||id}**\\nID: \`${id}\`\\n\\n${subscriptionText(r)}`:`No active ${word} on \`${id}\`.`,isP?COLORS.primary:COLORS.warning)]});}const entries=Object.entries(store.guilds||{});return safeReply(interaction,{embeds:[infoEmbed(`${word} Servers`,entries.length?entries.map(([id,r])=>`• **${client.guilds.cache.get(id)?.name||id}** — \`${id}\` — ${PLAN_DEFINITIONS[r.plan]?.label||r.plan}`).join("\\n"):`No active ${word} server subscriptions.`)]});}
+    }
+
+    if(command==="sys"){
+      if(!ownerOnly(interaction))return safeReply(interaction,{embeds:[ownerGuardEmbed()],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand();
+      if(sub==="restart"){await interaction.reply({embeds:[infoEmbed("🔄 Restarting Vyne","The restart request has been sent to Bot-Hosting. **Vyne will come back online shortly.**")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/power`,{method:"POST",body:JSON.stringify({action:"restart",waitSeconds:20})});}catch(err){console.error("/sys restart error:",err?.message||err);}return;}
+      if(sub==="pull"){await interaction.reply({embeds:[infoEmbed("📥 Updating Vyne","The latest GitHub code is being pulled. Vyne will restart when the update is complete.")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/sync`,{method:"POST",body:JSON.stringify({})});}catch(err){console.error("/sys pull error:",err?.message||err);}return;}
+      await deferOnce(interaction,MessageFlags.Ephemeral);
+      try{
+        if(sub==="status")return interaction.editReply({embeds:[await hostingStatusEmbed()]});
+        const d=await getHostingDeployment();
+        if(sub==="info"){const x=await hostingRequest(`/deployments/${d.id}`);return interaction.editReply({embeds:[embed("🖥️ Deployment Information","Live Bot-Hosting information.",COLORS.info).addFields({name:"Name",value:x.name||"Vyne Moderation",inline:true},{name:"State",value:`\`${x.state||"unknown"}\``,inline:true},{name:"Status",value:`\`${x.status||"unknown"}\``,inline:true},{name:"Runtime",value:x.runtime||"N/A",inline:true},{name:"Entry",value:x.entryFile||"N/A",inline:true},{name:"Deployment ID",value:`\`${x.id}\``})]});}
+        if(sub==="diagnose"){const x=await hostingDiagnose();const logs=Array.isArray(x.logs)?x.logs.slice(-8).join("\\n").slice(0,3500):"No log tail.";return interaction.editReply({embeds:[embed("🩺 Vyne Diagnostic",x.hint||"Diagnostic complete.",x.state==="running"?COLORS.success:COLORS.danger).addFields({name:"State",value:`\`${x.state||"unknown"}\``,inline:true},{name:"Installing",value:x.installing?"Yes":"No",inline:true},{name:"Recent Logs",value:`\`\`\`\\n${logs}\\n\`\`\``})]});}
+        if(sub==="logs"){const pattern=interaction.options.getString("pattern")||"error",x=await hostingRequest(`/deployments/${d.id}/logs?pattern=${encodeURIComponent(pattern)}&lines=2000&context=2`),matches=x.matches||[];return interaction.editReply({embeds:[embed("📜 Deployment Logs",`Pattern: \`${pattern}\`\\n\\n${matches.length?matches.slice(0,8).map(m=>`Line ${m.line}: ${m.text}`).join("\\n").slice(0,3800):"No matching log entries."}`,matches.length?COLORS.warning:COLORS.success)]});}
+      }catch(err){return interaction.editReply({embeds:[errorEmbed("Hosting request failed",truncate(err?.message||err,1500))]});}
+    }
+  } catch(err) {
+    console.error("Interaction error:",err);
+    return safeReply(interaction,{embeds:[errorEmbed("Something went wrong",`\`${truncate(err?.message||err,1500)}\``)],flags:MessageFlags.Ephemeral});
   }
 }
 
@@ -1884,7 +2811,10 @@ setInterval(async () => {
     }
   }
   writeJSON(FILES.giveaways, db.giveaways);
+  writeJSON(FILES.analytics, db.analytics);
 }, 10000);
+
+setInterval(() => pollNotificationFeeds().catch(err => console.error("Notification polling error:", err)), 60000);
 
 client.once("clientReady", async readyClient => {
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
