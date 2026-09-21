@@ -159,6 +159,7 @@ async function resolveTrack(query, requester, player) {
       artworkUrl: info.artworkUrl || info.thumbnail || null,
       artist: cleanTitle(info.author || info.artist || "Unknown artist"),
       album: cleanTitle(lavaTrack.pluginInfo?.albumName || ""),
+      source: cleanTitle(info.sourceName || "YouTube"),
       channel: cleanTitle(info.author || "YouTube"),
       uploader: cleanTitle(info.author || "YouTube"),
       requesterId: requester.id,
@@ -294,6 +295,7 @@ async function autoplayTrack(client, guildId) {
       artworkUrl: info.artworkUrl || info.thumbnail || null,
       artist: cleanTitle(info.author || "Unknown artist"),
       album: cleanTitle(candidate.pluginInfo?.albumName || ""),
+      source: cleanTitle(info.sourceName || "YouTube"),
       channel: cleanTitle(info.author || "YouTube"),
       uploader: cleanTitle(info.author || "YouTube"),
       requesterId: "autoplay",
@@ -446,17 +448,21 @@ async function getArtworkImage(track) {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const image = await loadImage(buffer);
-    artworkCache.set(url, image);
-    while (artworkCache.size > ARTWORK_CACHE_LIMIT) {
-      const firstKey = artworkCache.keys().next().value;
-      artworkCache.delete(firstKey);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const image = await loadImage(buffer);
+      artworkCache.set(url, image);
+      while (artworkCache.size > ARTWORK_CACHE_LIMIT) {
+        const firstKey = artworkCache.keys().next().value;
+        artworkCache.delete(firstKey);
+      }
+      return image;
+    } finally {
+      clearTimeout(timer);
     }
-    return image;
+
   } catch {
     return null;
   }
