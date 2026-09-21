@@ -616,7 +616,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     const query = interaction.options.getString("query", true);
     const existing = getPlayer(client, guildId);
     if (existing?.voiceChannelId && existing.voiceChannelId !== channel.id) {
-      return payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${existing.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning));
+      return payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${existing.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning);
     }
 
     await connectToChannel(client, interaction.guild, channel);
