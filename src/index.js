@@ -2842,7 +2842,9 @@ client.on("messageUpdate", (oldMessage, newMessage) => {
 
 client.on("channelDelete", channel => {
   if (!channel?.guild) return;
-  if (tempVoiceOwners.has(channel.id)) forgetTempVoice(channel.guild.id, channel.id);
+  if (tempVoiceOwners.has(channel.id) || getGuildData(channel.guild.id).voicemaster?.rooms?.[channel.id]) {
+    forgetTempVoice(channel.guild.id, channel.id);
+  }
 });
 
 client.on("voiceStateUpdate", async (oldState, newState) => {
@@ -2879,7 +2881,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
     }
   }
 
-  if (oldState.channelId && tempVoiceOwners.has(oldState.channelId)) {
+  if (oldState.channelId && getTempVoice(oldState.guild.id, oldState.channelId)) {
     const channel = oldState.guild.channels.cache.get(oldState.channelId);
     if (channel && channel.members.size === 0) {
       forgetTempVoice(oldState.guild.id, oldState.channelId);
