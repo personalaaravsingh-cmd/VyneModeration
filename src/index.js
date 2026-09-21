@@ -2214,6 +2214,10 @@ async function setLockdown(guild, enabled, reason = "Vyne emergency lockdown") {
   const cfg = getGuildData(guild.id);
   const wasLocked = Boolean(cfg.raid.lockdown);
 
+  // Never "unlock" an already-unlocked server: doing so would clear
+  // legitimate @everyone SendMessages overwrites that existed before lockdown.
+  if (!enabled && !wasLocked) return { changed: 0, skipped: 0 };
+
   const channelTypes = new Set([
     ChannelType.GuildText,
     ChannelType.GuildAnnouncement,
