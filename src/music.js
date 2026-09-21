@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const youtubedl = require("youtube-dl-exec");
+const { YtDlp } = require("ytdlp-nodejs");
+const ffmpegPath = require("ffmpeg-static");
+const ytdlp = new YtDlp({ ffmpegPath });
 const { createCanvas, loadImage } = require("@napi-rs/canvas");
 const {
   joinVoiceChannel,
@@ -159,9 +161,8 @@ function ytDlpOptions(extra = {}) {
   return {
     noWarnings: true,
     noPlaylist: true,
-    // Use the exact Node executable running Vyne instead of relying on PATH.
-    jsRuntimes: `node:${process.execPath}`,
-    remoteComponents: "ejs:github",
+    jsRuntime: "node",
+    rawArgs: ["--remote-components", "ejs:github"],
     ...extra
   };
 }
@@ -175,8 +176,8 @@ function ytDlpError(err, fallback = "YouTube could not be read.") {
     err?.cause?.message ? `cause=${err.cause.message}` : ""
   ].filter(Boolean).map(String).join("\n").trim();
 
-  if (/python3.*not found|python.*not found|could not find.*python/i.test(raw)) {
-    return "The host is missing Python 3, which youtube-dl-exec currently requires during installation.";
+  if (/enoent|yt-dlp binary not found|binary not found/i.test(raw)) {
+    return "The yt-dlp binary could not be started on this host. Restart/redeploy so ytdlp-nodejs can install its bundled yt-dlp binary.";
   }
   if (/sign in to confirm|not a bot|LOGIN_REQUIRED|http error 429|too many requests/i.test(raw)) {
     return "YouTube is blocking this server's IP right now. Try again later or configure YouTube cookies/PO-token support.";
@@ -198,6 +199,16 @@ function ytDlpError(err, fallback = "YouTube could not be read.") {
   return useful || fallback;
 }
 
+async function ytInfo(url, extra = {}) {
+  return ytdlp.getInfoAsync(url, ytDlpOptions(extra));
+}
+
+async function ytSearch(query, limit = 8) {
+  return ytInfo(`ytsearch${limit}:${query}`, {
+    flatPlaylist: true
+  });
+}
+
 async function resolveTrack(query, requester) {
   const input = String(query || "").trim();
   if (!input) throw new Error("Enter a YouTube URL or song name.");
@@ -209,24 +220,14 @@ async function resolveTrack(query, requester) {
     if (isYouTubeUrl(input)) {
       const id = youtubeVideoId(input);
       if (!id) throw new Error("That YouTube URL does not contain a playable video.");
-      info = await youtubedl(input, ytDlpOptions({
-        dumpSingleJson: true,
-        skipDownload: true
-      }));
+      info = await ytInfo(input, { flatPlaylist: false });
     } else {
-      const data = await youtubedl(`ytsearch8:${input}`, ytDlpOptions({
-        dumpSingleJson: true,
-        flatPlaylist: true,
-        extractFlat: true
-      }));
+      const data = await ytSearch(input, 8);
       const results = Array.isArray(data?.entries) ? data.entries : [];
       const result = results.find(v => v?.url && !v.live) || results.find(v => v?.url);
       if (!result?.url) throw new Error("No YouTube results found for that song.");
-      url = result.url;
-      info = await youtubedl(url, ytDlpOptions({
-        dumpSingleJson: true,
-        skipDownload: true
-      }));
+      url = result.webpage_url || result.url;
+      info = await ytInfo(url, { flatPlaylist: false });
     }
   } catch (err) {
     const diagnostic = ytDlpError(err);
@@ -341,25 +342,30 @@ async function startCurrent(guildId, track, seekSeconds = 0) {
   if (!session.connection) throw new Error("Vyne is not connected to a voice channel.");
 
   const seek = Math.max(0, Number(seekSeconds) || 0);
-  const subprocess = youtubedl.exec(track.url, ytDlpOptions({
+  const streamOptions = ytDlpOptions({
     format: "bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]",
     output: "-",
     quiet: true,
+    noWarnings: true,
     ...(seek > 0 ? { downloadSections: `*${seek}-` } : {})
-  }));
+  });
 
-  subprocess.stderr?.on("data", chunk => {
+  const media = ytdlp.stream(track.url, streamOptions);
+
+  media.on("stderr", chunk => {
     const message = String(chunk || "").trim();
     if (message && !/\[download\]/i.test(message)) {
-      console.error(`[Music:${guildId}] yt-dlp:`, message.slice(-500));
+      console.error(`[Music:${guildId}] yt-dlp:`, message.slice(-700));
     }
   });
 
-  subprocess.on("error", error => {
-    console.error(`[Music:${guildId}] yt-dlp process error:`, error?.message || error);
+  media.on("error", error => {
+    console.error(`[Music:${guildId}] yt-dlp stream error:`, ytDlpError(error));
   });
 
-  const resource = createAudioResource(subprocess.stdout, {
+  const audioStream = media.getStream();
+
+  const resource = createAudioResource(audioStream, {
     inputType: StreamType.WebmOpus,
     inlineVolume: true,
     metadata: track
@@ -388,19 +394,10 @@ async function autoplayTrack(guildId) {
   const query = `${current.title} ${current.channel}`;
   let data;
   try {
-    data = await youtubedl(`ytsearch10:${query}`, ytDlpOptions({
-      dumpSingleJson: true,
-      flatPlaylist: true,
-      extractFlat: true
-    }));
+    data = await ytSearch(query, 10);
   } catch (err) {
     const diagnostic = ytDlpError(err, "Autoplay search failed.");
-    console.error(`[Music:${guildId}] autoplay search error:`, {
-      message: err?.message || String(err),
-      code: err?.code || null,
-      stderr: String(err?.stderr || "").slice(-4000),
-      stdout: String(err?.stdout || "").slice(-1000)
-    });
+    console.error(`[Music:${guildId}] autoplay search error:`, diagnostic);
     throw new Error(diagnostic);
   }
 
@@ -408,13 +405,13 @@ async function autoplayTrack(guildId) {
   const candidate = results.find(v =>
     v?.url &&
     !v.live &&
-    youtubeVideoId(v.url) &&
-    !session.history.includes(youtubeVideoId(v.url))
+    youtubeVideoId(v.webpage_url || v.url) &&
+    !session.history.includes(youtubeVideoId(v.webpage_url || v.url))
   );
 
   if (!candidate) return null;
 
-  const track = await resolveTrack(candidate.url, {
+  const track = await resolveTrack(candidate.webpage_url || candidate.url, {
     id: clientUserIdFallback,
     tag: "Vyne Autoplay",
     username: "Vyne Autoplay"
