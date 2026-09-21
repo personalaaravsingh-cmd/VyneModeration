@@ -143,9 +143,11 @@ client.lavalink = new LavalinkManager({
       autoReconnect: true,
       destroyPlayer: false
     },
-    onEmptyQueue: {
-      destroyAfterMs: 0
-    },
+    // Never let Lavalink destroy the player just because the music queue becomes
+    // empty. Vyne manages queue-idle disconnects itself, and 24/7 must remain
+    // connected even after /music skip leaves the queue temporarily empty.
+    onEmptyQueue: {},
+
     useUnresolvedData: true
   },
   queueOptions: {
