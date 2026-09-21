@@ -76,6 +76,8 @@ function sessionFor(guildId) {
     cardTimer: null,
     cardUpdating: false,
     lastCardSecond: null,
+    voiceStatus: null,
+    voiceStatusChannelId: null,
     client: null,
     suppressNextEnd: false
   };
@@ -128,6 +130,39 @@ function lavaError(err, fallback = "Lavalink could not process this track.") {
 
 function getPlayer(client, guildId) {
   return client?.lavalink?.getPlayer(guildId) || null;
+}
+
+function musicVoiceStatus(session) {
+  const track = session?.current;
+  if (!track) return session?.player ? "🎵 Music idle • /music play" : null;
+  const title = cleanTitle(track.title || "Unknown track").slice(0, 360);
+  const artist = cleanTitle(track.artist || track.channel || "Unknown artist").slice(0, 100);
+  const paused = Boolean(session.player?.paused);
+  return `${paused ? "⏸️" : "🎵"} ${title} • ${artist}`.slice(0, 500);
+}
+
+async function setMusicVoiceStatus(client, guildId, status = undefined, channelId = null) {
+  const session = sessions.get(guildId);
+  if (!session) return false;
+  const targetChannelId = channelId || session.voiceChannelId;
+  if (!targetChannelId || !client?.rest?.put) return false;
+
+  const nextStatus = status === undefined ? musicVoiceStatus(session) : status;
+  if (session.voiceStatus === nextStatus && session.voiceStatusChannelId === targetChannelId) return true;
+
+  try {
+    await client.rest.put(`/channels/${targetChannelId}/voice-status`, {
+      body: { status: nextStatus }
+    });
+    session.voiceStatus = nextStatus;
+    session.voiceStatusChannelId = targetChannelId;
+    return true;
+  } catch (err) {
+    if (err?.status !== 403 && err?.code !== 50013) {
+      console.error(`[Music:${guildId}] voice status update error:`, err?.message || err);
+    }
+    return false;
+  }
 }
 
 async function resolveTrack(query, requester, player) {
@@ -214,6 +249,7 @@ async function connectToChannel(client, guild, channel) {
   session.player = player;
   session.client = client;
   session.voiceChannelId = channel.id;
+  await setMusicVoiceStatus(client, guild.id);
   return session;
 }
 
@@ -233,9 +269,12 @@ function scheduleIdleDisconnect(client, guildId) {
   session.idleTimer = setTimeout(async () => {
     if (session.current || session.queue.length) return;
     const player = getPlayer(client, guildId);
+    await setMusicVoiceStatus(client, guildId, null).catch(() => {});
     if (player) await player.destroy("Idle music disconnect").catch(() => {});
     session.player = null;
     session.voiceChannelId = null;
+    session.voiceStatus = null;
+    session.voiceStatusChannelId = null;
   }, 60_000);
 }
 
@@ -260,6 +299,7 @@ async function startCurrent(client, guildId, track, seekSeconds = 0) {
   session.history = session.history.slice(-25);
   cancelIdleDisconnect(session);
 
+  await setMusicVoiceStatus(client, guildId);
   if (session.nowPlayingMessage) {
     session.lastCardSecond = null;
     void updateNowPlayingCard(guildId, true);
@@ -365,27 +405,86 @@ function setupLavalink(client) {
   lavalinkEventsAttached = true;
   clientUserIdFallback = client.user?.id || "vyne";
 
-  client.lavalink.on("trackEnd", (player) => {
+  client.lavalink.on("trackStart", (player, track) => {
     if (!player?.guildId) return;
     const session = sessions.get(player.guildId);
-    if (!session || session.advancing) return;
+    if (!session) return;
+    void setMusicVoiceStatus(client, player.guildId);
+    if (session.nowPlayingMessage) {
+      session.lastCardSecond = null;
+      void updateNowPlayingCard(player.guildId, true);
+    }
+  });
+
+  client.lavalink.on("trackEnd", (player, track, payload) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session) return;
     if (session.suppressNextEnd) {
       session.suppressNextEnd = false;
       return;
     }
-    void advance(client, player.guildId, "finished");
+    if (session.advancing) return;
+    const endedId = track?.info?.identifier || track?.encoded;
+    const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
+    if (endedId && currentId && endedId !== currentId) return;
+    void advance(client, player.guildId, payload?.reason === "stopped" ? "skipped" : "finished");
   });
 
   client.lavalink.on("trackError", (player, track, payload) => {
-    console.error(`[Music:${player?.guildId}] Lavalink track error:`, payload || track);
     if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session || session.advancing) return;
+    const failedId = track?.info?.identifier || track?.encoded;
+    const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
+    if (failedId && currentId && failedId !== currentId) return;
+    console.error(`[Music:${player.guildId}] Lavalink track error:`, payload || track);
     void advance(client, player.guildId, "error");
   });
 
   client.lavalink.on("trackStuck", (player, track, payload) => {
-    console.error(`[Music:${player?.guildId}] Lavalink track stuck:`, payload || track);
     if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session || session.advancing) return;
+    const stuckId = track?.info?.identifier || track?.encoded;
+    const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
+    if (stuckId && currentId && stuckId !== currentId) return;
+    console.error(`[Music:${player.guildId}] Lavalink track stuck:`, payload || track);
     void advance(client, player.guildId, "error");
+  });
+
+  client.lavalink.on("playerMove", (player, oldChannelId, newChannelId) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session) return;
+    session.voiceChannelId = newChannelId || player.voiceChannelId || session.voiceChannelId;
+    void setMusicVoiceStatus(client, player.guildId);
+  });
+
+  client.lavalink.on("playerDisconnect", (player) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session) return;
+    session.voiceChannelId = null;
+    session.voiceStatus = null;
+    session.voiceStatusChannelId = null;
+  });
+
+  client.lavalink.on("playerDestroy", (player) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session) return;
+    session.player = null;
+    session.voiceChannelId = null;
+    session.voiceStatus = null;
+    session.voiceStatusChannelId = null;
+  });
+
+  client.lavalink.on("queueEnd", (player) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session || session.current) return;
+    void setMusicVoiceStatus(client, player.guildId);
   });
 
   client.lavalink.nodeManager.on("connect", node => {
@@ -704,7 +803,7 @@ async function handleMusicCommand(interaction, premiumActive) {
         return payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning);
       }
       session.queue.push(track);
-      return payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success);
+      return payloadEmbed("➕ Added to queue", `${trackLine(track)}\n\nPosition: **#${session.queue.length}**`, COLORS.success);
     }
 
     await startCurrent(client, guildId, track);
@@ -715,6 +814,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
     if (session.player.paused) return payloadEmbed("⏸️ Already paused", "The current track is already paused.", COLORS.warning);
     await session.player.pause();
+    await setMusicVoiceStatus(client, guildId);
     return payloadEmbed("⏸️ Paused", `Paused **${session.current.title}**.`, COLORS.success);
   }
 
@@ -722,6 +822,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
     if (!session.player.paused) return payloadEmbed("▶️ Already playing", "The current track is not paused.", COLORS.warning);
     await session.player.resume();
+    await setMusicVoiceStatus(client, guildId);
     return payloadEmbed("▶️ Resumed", `Resumed **${session.current.title}**.`, COLORS.success);
   }
 
@@ -740,6 +841,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     session.current = null;
     session.lastRequester = null;
     session.loop = "off";
+    await setMusicVoiceStatus(client, guildId, "⏹️ Music stopped");
     stopNowPlayingUpdater(session);
     if (!settings.always247) scheduleIdleDisconnect(client, guildId);
     return payloadEmbed("⏹️ Stopped", settings.always247 ? "Playback stopped. 24/7 is still keeping Vyne in the voice channel." : "Playback stopped and the queue was cleared.", COLORS.success);
@@ -820,10 +922,13 @@ async function handleMusicCommand(interaction, premiumActive) {
     savePersistent();
     session.queue = [];
     session.current = null;
+    await setMusicVoiceStatus(client, guildId, null).catch(() => {});
     stopNowPlayingUpdater(session);
     if (session.player) await session.player.destroy("Music disconnect").catch(() => {});
     session.player = null;
     session.voiceChannelId = null;
+    session.voiceStatus = null;
+    session.voiceStatusChannelId = null;
     return payloadEmbed("👋 Disconnected", "Vyne left the voice channel and cleared the music session.", COLORS.success);
   }
 
@@ -855,9 +960,12 @@ async function handleMusicCommand(interaction, premiumActive) {
         settings.voiceChannelId = null;
         settings.ownerId = null;
         if (!session.current && session.player) {
+          await setMusicVoiceStatus(client, guildId, null).catch(() => {});
           await session.player.destroy("24/7 disabled").catch(() => {});
           session.player = null;
           session.voiceChannelId = null;
+          session.voiceStatus = null;
+          session.voiceStatusChannelId = null;
         }
       }
     }
