@@ -1,20 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { YtDlp, helpers: ytdlpHelpers } = require("ytdlp-nodejs");
-const ffmpegPath = require("ffmpeg-static");
-let ytdlp = new YtDlp({ ffmpegPath });
 const { createCanvas, loadImage } = require("@napi-rs/canvas");
-const {
-  joinVoiceChannel,
-  getVoiceConnection,
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  VoiceConnectionStatus,
-  NoSubscriberBehavior,
-  entersState,
-  StreamType
-} = require("@discordjs/voice");
 
 const DATA_FILE = path.join(__dirname, "..", "data", "music.json");
 fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
@@ -29,6 +15,8 @@ const COLORS = {
 
 const sessions = new Map();
 let persistent = loadPersistent();
+let clientUserIdFallback = "vyne";
+let lavalinkEventsAttached = false;
 
 function loadPersistent() {
   try {
@@ -71,16 +59,8 @@ function stateFor(guildId) {
 function sessionFor(guildId) {
   let session = sessions.get(guildId);
   if (session) return session;
-
-  const player = createAudioPlayer({
-    behaviors: {
-      noSubscriber: NoSubscriberBehavior.Pause
-    }
-  });
-
   session = {
-    player,
-    connection: null,
+    player: null,
     voiceChannelId: null,
     queue: [],
     current: null,
@@ -92,25 +72,9 @@ function sessionFor(guildId) {
     idleTimer: null,
     nowPlayingMessage: null,
     cardTimer: null,
-    lastCardSecond: null
+    lastCardSecond: null,
+    client: null
   };
-
-  player.on(AudioPlayerStatus.Idle, () => {
-    if (session.advancing) return;
-    void advance(guildId, "finished");
-  });
-
-  player.on("error", async error => {
-    console.error(`[Music:${guildId}] player error:`, error?.message || error);
-    if (session.advancing) return;
-    session.advancing = true;
-    try {
-      await advance(guildId, "error");
-    } finally {
-      session.advancing = false;
-    }
-  });
-
   sessions.set(guildId, session);
   return session;
 }
@@ -121,16 +85,6 @@ function isYouTubeUrl(input) {
     return ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(url.hostname.toLowerCase());
   } catch {
     return false;
-  }
-}
-
-function youtubeVideoId(input) {
-  try {
-    const url = new URL(input);
-    if (url.hostname.toLowerCase() === "youtu.be") return url.pathname.slice(1).split("/")[0] || null;
-    return url.searchParams.get("v") || url.pathname.match(/\/(?:shorts|embed)\/([^/?]+)/)?.[1] || null;
-  } catch {
-    return null;
   }
 }
 
@@ -157,124 +111,58 @@ function cleanTitle(title) {
   return String(title || "Unknown track").replace(/\s+/g, " ").trim().slice(0, 256);
 }
 
-function ytDlpOptions(extra = {}) {
-  return {
-    noWarnings: true,
-    noPlaylist: true,
-    jsRuntime: "node",
-    rawArgs: ["--remote-components", "ejs:github"],
-    ...extra
-  };
+function lavaError(err, fallback = "Lavalink could not process this track.") {
+  const raw = [err?.message, err?.stack, err?.cause?.message, err?.payload?.message, err?.payload?.error]
+    .filter(Boolean).map(String).join(" ").trim();
+  if (/node.*(connect|connection|offline)|ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(raw)) {
+    return "The Lavalink music node is currently unavailable. Try again in a moment.";
+  }
+  if (/no matches|no track|not found/i.test(raw)) return "No playable track was found for that query.";
+  return raw.slice(0, 1200) || fallback;
 }
 
-function ytDlpError(err, fallback = "YouTube could not be read.") {
-  const raw = [
-    err?.stderr,
-    err?.stdout,
-    err?.message,
-    err?.code ? `code=${err.code}` : "",
-    err?.cause?.message ? `cause=${err.cause.message}` : ""
-  ].filter(Boolean).map(String).join("\n").trim();
-
-  if (/enoent|yt-dlp binary not found|binary not found/i.test(raw)) {
-    return "The yt-dlp binary could not be started on this host. Restart/redeploy so ytdlp-nodejs can install its bundled yt-dlp binary.";
-  }
-  if (/sign in to confirm|not a bot|LOGIN_REQUIRED|http error 429|too many requests/i.test(raw)) {
-    return "YouTube is blocking this server's IP right now. Try again later or configure YouTube cookies/PO-token support.";
-  }
-  if (/no supported javascript runtime|javascript runtime.*not found/i.test(raw)) {
-    return "yt-dlp could not access Node.js for YouTube's JavaScript challenge solver.";
-  }
-  if (/remote component.*(ejs|github)|unable to download.*ejs|ejs.*not found/i.test(raw)) {
-    return "yt-dlp could not load the YouTube EJS challenge scripts from GitHub.";
-  }
-
-  const useful = raw.split("\n")
-    .map(x => x.trim())
-    .filter(Boolean)
-    .filter(x => !/^warning:/i.test(x))
-    .slice(-4)
-    .join(" ");
-
-  return useful || fallback;
+function getPlayer(client, guildId) {
+  return client?.lavalink?.getPlayer(guildId) || null;
 }
 
-async function ensureYtDlp() {
-  if (ytdlp?.binaryPath && fs.existsSync(ytdlp.binaryPath)) return ytdlp;
-
-  try {
-    const binaryPath = await ytdlpHelpers.downloadYtDlp();
-    ytdlp = new YtDlp({ binaryPath, ffmpegPath });
-    return ytdlp;
-  } catch (err) {
-    throw new Error(ytDlpError(err, "Vyne could not install its yt-dlp binary on this host."));
-  }
-}
-
-async function ytInfo(url, extra = {}) {
-  const engine = await ensureYtDlp();
-  return engine.getInfoAsync(url, ytDlpOptions(extra));
-}
-
-async function ytSearch(query, limit = 8) {
-  return ytInfo(`ytsearch${limit}:${query}`, {
-    flatPlaylist: true
-  });
-}
-
-async function resolveTrack(query, requester) {
+async function resolveTrack(query, requester, player) {
   const input = String(query || "").trim();
-  if (!input) throw new Error("Enter a YouTube URL or song name.");
-
-  let url = input;
-  let info;
+  if (!input) throw new Error("Enter a song name or URL.");
+  if (!player) throw new Error("The Lavalink music node is not connected.");
 
   try {
-    if (isYouTubeUrl(input)) {
-      const id = youtubeVideoId(input);
-      if (!id) throw new Error("That YouTube URL does not contain a playable video.");
-      info = await ytInfo(input, { flatPlaylist: false });
-    } else {
-      const data = await ytSearch(input, 8);
-      const results = Array.isArray(data?.entries) ? data.entries : [];
-      const result = results.find(v => v?.url && !v.live) || results.find(v => v?.url);
-      if (!result?.url) throw new Error("No YouTube results found for that song.");
-      url = result.webpage_url || result.url;
-      info = await ytInfo(url, { flatPlaylist: false });
+    const result = await player.search(
+      isYouTubeUrl(input) ? { query: input } : { query: input, source: "ytmsearch" },
+      requester
+    );
+    const lavaTrack = result?.tracks?.[0];
+    if (!lavaTrack) throw new Error("No playable track was found for that query.");
+
+    const info = lavaTrack.info || {};
+    const duration = durationSeconds(info.duration || info.durationString);
+    if (info.isStream || info.isLive || info.liveStatus === "is_live") {
+      throw new Error("Live streams are not supported by Vyne Music.");
     }
+
+    return {
+      id: info.identifier || info.uri || lavaTrack.encoded,
+      url: info.uri || input,
+      title: cleanTitle(info.title),
+      duration,
+      durationText: formatDuration(duration),
+      thumbnail: info.artworkUrl || info.thumbnail || null,
+      artist: cleanTitle(info.author || info.artist || "Unknown artist"),
+      channel: cleanTitle(info.author || "YouTube"),
+      uploader: cleanTitle(info.author || "YouTube"),
+      requesterId: requester.id,
+      requesterTag: requester.tag || requester.username || requester.id,
+      addedAt: Date.now(),
+      lavaTrack
+    };
   } catch (err) {
-    const diagnostic = ytDlpError(err);
-    console.error("[Music] YouTube resolve error:", {
-      message: err?.message || String(err),
-      code: err?.code || null,
-      stderr: String(err?.stderr || "").slice(-4000),
-      stdout: String(err?.stdout || "").slice(-1000)
-    });
-    throw new Error(diagnostic);
+    console.error("[Music] Lavalink resolve error:", err);
+    throw new Error(lavaError(err));
   }
-
-  const duration = durationSeconds(info?.duration || info?.duration_string);
-  if (info?.is_live || info?.live_status === "is_live") {
-    throw new Error("Live YouTube streams are not supported by Vyne Music yet.");
-  }
-
-  const artist = info?.artist || info?.creator || info?.uploader || info?.channel || "Unknown artist";
-  const channel = info?.channel || info?.uploader || "YouTube";
-
-  return {
-    id: youtubeVideoId(url) || info?.id || url,
-    url,
-    title: cleanTitle(info?.title || "YouTube track"),
-    duration,
-    durationText: formatDuration(duration),
-    thumbnail: info?.thumbnail || info?.thumbnails?.[0]?.url || null,
-    artist: cleanTitle(artist),
-    channel: cleanTitle(channel),
-    uploader: cleanTitle(info?.uploader || info?.channel || "YouTube"),
-    requesterId: requester.id,
-    requesterTag: requester.tag || requester.username || requester.id,
-    addedAt: Date.now()
-  };
 }
 
 function queuePositionFor(session, requesterId) {
@@ -283,47 +171,41 @@ function queuePositionFor(session, requesterId) {
 
 function selectNext(session, settings) {
   if (!session.queue.length) return null;
-
-  if (!settings.fairplay) {
-    return session.queue.shift();
-  }
-
+  if (!settings.fairplay) return session.queue.shift();
   const different = session.queue.findIndex(t => t.requesterId !== session.lastRequester);
   const index = different >= 0 ? different : 0;
   return session.queue.splice(index, 1)[0];
 }
 
-async function connectToChannel(guild, channel) {
+async function connectToChannel(client, guild, channel) {
   if (!channel || channel.type !== 2) throw new Error("Join a voice channel first.");
 
   const session = sessionFor(guild.id);
-  let connection = getVoiceConnection(guild.id);
-
-  if (connection && session.voiceChannelId !== channel.id) {
-    connection.destroy();
-    connection = null;
+  const existing = getPlayer(client, guild.id);
+  if (existing && existing.voiceChannelId && existing.voiceChannelId !== channel.id) {
+    await existing.destroy("Moved to another music channel").catch(() => {});
+    session.player = null;
   }
 
-  if (!connection) {
-    connection = joinVoiceChannel({
-      channelId: channel.id,
+  let player = getPlayer(client, guild.id);
+  if (!player) {
+    player = client.lavalink.createPlayer({
       guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
+      voiceChannelId: channel.id,
+      textChannelId: null,
       selfDeaf: true,
-      selfMute: false
+      selfMute: false,
+      node: "TripleN",
+      volume: session.volume
     });
+  } else if (player.voiceChannelId !== channel.id) {
+    await player.changeVoiceState({ voiceChannelId: channel.id, selfDeaf: true, selfMute: false });
   }
 
-  session.connection = connection;
+  await player.connect();
+  session.player = player;
+  session.client = client;
   session.voiceChannelId = channel.id;
-  connection.subscribe(session.player);
-
-  try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-  } catch {
-    throw new Error("I couldn't connect to that voice channel. Check my Connect and Speak permissions.");
-  }
-
   return session;
 }
 
@@ -334,146 +216,159 @@ function cancelIdleDisconnect(session) {
   }
 }
 
-function scheduleIdleDisconnect(guildId) {
+function scheduleIdleDisconnect(client, guildId) {
   const session = sessionFor(guildId);
   const settings = stateFor(guildId);
   cancelIdleDisconnect(session);
   if (settings.always247) return;
 
-  session.idleTimer = setTimeout(() => {
+  session.idleTimer = setTimeout(async () => {
     if (session.current || session.queue.length) return;
-    const connection = getVoiceConnection(guildId);
-    if (connection) connection.destroy();
-    session.connection = null;
+    const player = getPlayer(client, guildId);
+    if (player) await player.destroy("Idle music disconnect").catch(() => {});
+    session.player = null;
     session.voiceChannelId = null;
   }, 60_000);
 }
 
-async function startCurrent(guildId, track, seekSeconds = 0) {
+async function startCurrent(client, guildId, track, seekSeconds = 0) {
   const session = sessionFor(guildId);
   const settings = stateFor(guildId);
-  if (!session.connection) throw new Error("Vyne is not connected to a voice channel.");
+  const player = getPlayer(client, guildId) || session.player;
+  if (!player) throw new Error("Vyne is not connected to a voice channel.");
 
   const seek = Math.max(0, Number(seekSeconds) || 0);
-  const streamOptions = ytDlpOptions({
-    format: "bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]",
-    output: "-",
-    quiet: true,
-    noWarnings: true,
-    ...(seek > 0 ? { downloadSections: `*${seek}-` } : {})
+  await player.play({
+    clientTrack: track.lavaTrack,
+    volume: session.volume,
+    position: Math.floor(seek * 1000)
   });
 
-  const engine = await ensureYtDlp();
-  const media = engine.stream(track.url, streamOptions);
-
-  media.on("stderr", chunk => {
-    const message = String(chunk || "").trim();
-    if (message && !/\[download\]/i.test(message)) {
-      console.error(`[Music:${guildId}] yt-dlp:`, message.slice(-700));
-    }
-  });
-
-  media.on("error", error => {
-    console.error(`[Music:${guildId}] yt-dlp stream error:`, ytDlpError(error));
-  });
-
-  const audioStream = media.getStream();
-
-  const resource = createAudioResource(audioStream, {
-    inputType: StreamType.WebmOpus,
-    inlineVolume: true,
-    metadata: track
-  });
-
-  resource.volume.setVolume(Math.max(0, Math.min(100, session.volume)) / 100);
-  session.current = { ...track, startedAt: Date.now(), seek };
+  session.player = player;
+  session.client = client;
+  session.current = { ...track, guildId, startedAt: Date.now(), seek };
   session.lastRequester = track.requesterId;
   session.history.push(track.id);
   session.history = session.history.slice(-25);
-  session.player.play(resource);
   cancelIdleDisconnect(session);
+
   if (session.nowPlayingMessage) {
     session.lastCardSecond = null;
     void updateNowPlayingCard(guildId, true);
   }
-
   return settings;
 }
 
-async function autoplayTrack(guildId) {
+async function autoplayTrack(client, guildId) {
   const session = sessionFor(guildId);
   const current = session.current;
-  if (!current) return null;
+  const player = getPlayer(client, guildId) || session.player;
+  if (!current || !player) return null;
 
-  const query = `${current.title} ${current.channel}`;
-  let data;
   try {
-    data = await ytSearch(query, 10);
+    const result = await player.search(
+      { query: `${current.title} ${current.channel}`, source: "ytmsearch" },
+      { id: clientUserIdFallback, tag: "Vyne Autoplay", username: "Vyne Autoplay" }
+    );
+    const candidate = (result?.tracks || []).find(track => {
+      const id = track?.info?.identifier;
+      return id && !session.history.includes(id) && !track.info?.isStream && !track.info?.isLive;
+    });
+    if (!candidate) return null;
+    const info = candidate.info || {};
+    const duration = durationSeconds(info.duration);
+    return {
+      id: info.identifier || info.uri || candidate.encoded,
+      url: info.uri || "",
+      title: cleanTitle(info.title),
+      duration,
+      durationText: formatDuration(duration),
+      thumbnail: info.artworkUrl || info.thumbnail || null,
+      artist: cleanTitle(info.author || "Unknown artist"),
+      channel: cleanTitle(info.author || "YouTube"),
+      uploader: cleanTitle(info.author || "YouTube"),
+      requesterId: "autoplay",
+      requesterTag: "Vyne Autoplay",
+      addedAt: Date.now(),
+      lavaTrack: candidate
+    };
   } catch (err) {
-    const diagnostic = ytDlpError(err, "Autoplay search failed.");
-    console.error(`[Music:${guildId}] autoplay search error:`, diagnostic);
-    throw new Error(diagnostic);
+    throw new Error(lavaError(err, "Autoplay search failed."));
   }
-
-  const results = Array.isArray(data?.entries) ? data.entries : [];
-  const candidate = results.find(v =>
-    v?.url &&
-    !v.live &&
-    youtubeVideoId(v.webpage_url || v.url) &&
-    !session.history.includes(youtubeVideoId(v.webpage_url || v.url))
-  );
-
-  if (!candidate) return null;
-
-  const track = await resolveTrack(candidate.webpage_url || candidate.url, {
-    id: clientUserIdFallback,
-    tag: "Vyne Autoplay",
-    username: "Vyne Autoplay"
-  });
-  track.requesterId = "autoplay";
-  track.requesterTag = "Vyne Autoplay";
-  return track;
 }
 
-let clientUserIdFallback = "vyne";
-
-async function advance(guildId, reason = "finished") {
+async function advance(client, guildId, reason = "finished") {
   const session = sessionFor(guildId);
   const settings = stateFor(guildId);
 
-  if (session.loop === "track" && session.current && reason === "finished") {
-    const same = { ...session.current };
-    await startCurrent(guildId, same, 0).catch(err => console.error(`[Music:${guildId}] loop error:`, err?.message || err));
-    return;
-  }
-
-  if (session.loop === "queue" && session.current && reason === "finished") {
-    session.queue.push({ ...session.current, requesterId: session.current.requesterId, requesterTag: session.current.requesterTag });
-  }
-
-  session.current = null;
-
-  let next = selectNext(session, settings);
-
-  if (!next && settings.autoplay) {
-    try {
-      next = await autoplayTrack(guildId);
-    } catch (err) {
-      console.error(`[Music:${guildId}] autoplay error:`, err?.message || err);
-    }
-  }
-
-  if (!next) {
-    scheduleIdleDisconnect(guildId);
-    return;
-  }
-
+  if (session.advancing) return;
+  session.advancing = true;
   try {
-    await startCurrent(guildId, next);
-  } catch (err) {
-    console.error(`[Music:${guildId}] stream error:`, err?.message || err);
-    await advance(guildId, "error");
+    if (session.loop === "track" && session.current && reason === "finished") {
+      const same = { ...session.current };
+      await startCurrent(client, guildId, same, 0);
+      return;
+    }
+
+    if (session.loop === "queue" && session.current && reason === "finished") {
+      session.queue.push({ ...session.current });
+    }
+
+    session.current = null;
+    let next = selectNext(session, settings);
+
+    if (!next && settings.autoplay) {
+      try { next = await autoplayTrack(client, guildId); } catch (err) {
+        console.error(`[Music:${guildId}] autoplay error:`, err?.message || err);
+      }
+    }
+
+    if (!next) {
+      scheduleIdleDisconnect(client, guildId);
+      return;
+    }
+
+    try {
+      await startCurrent(client, guildId, next);
+    } catch (err) {
+      console.error(`[Music:${guildId}] stream error:`, err?.message || err);
+      await advance(client, guildId, "error");
+    }
+  } finally {
+    session.advancing = false;
   }
+}
+
+function setupLavalink(client) {
+  if (lavalinkEventsAttached || !client?.lavalink) return;
+  lavalinkEventsAttached = true;
+  clientUserIdFallback = client.user?.id || "vyne";
+
+  client.lavalink.on("trackEnd", (player) => {
+    if (!player?.guildId) return;
+    const session = sessions.get(player.guildId);
+    if (!session || session.advancing) return;
+    void advance(client, player.guildId, "finished");
+  });
+
+  client.lavalink.on("trackError", (player, track, payload) => {
+    console.error(`[Music:${player?.guildId}] Lavalink track error:`, payload || track);
+    if (!player?.guildId) return;
+    void advance(client, player.guildId, "error");
+  });
+
+  client.lavalink.on("trackStuck", (player, track, payload) => {
+    console.error(`[Music:${player?.guildId}] Lavalink track stuck:`, payload || track);
+    if (!player?.guildId) return;
+    void advance(client, player.guildId, "error");
+  });
+
+  client.lavalink.nodeManager.on("connect", node => {
+    console.log(`[Music] Lavalink node connected: ${node.id}`);
+  });
+  client.lavalink.nodeManager.on("error", (node, error) => {
+    console.error(`[Music] Lavalink node error (${node.id}):`, error?.message || error);
+  });
 }
 
 function payloadEmbed(title, description, color = COLORS.primary) {
@@ -496,6 +391,9 @@ function trackLine(track, index = null) {
 
 function currentElapsed(track) {
   if (!track) return 0;
+  const session = sessions.get(track.guildId || "");
+  const player = session?.player;
+  if (player && Number.isFinite(player.position)) return Math.max(0, Math.floor(player.position / 1000));
   return Math.max(0, Math.floor((Date.now() - (track.startedAt || Date.now())) / 1000) + (track.seek || 0));
 }
 
@@ -659,8 +557,10 @@ async function forceFixMusic(guild, requesterId) {
   const guildId = guild.id;
   const session = sessionFor(guildId);
   const settings = stateFor(guildId);
-  if (!session.current) throw new Error("There is no active track to force-fix.");
-  const channelId = session.voiceChannelId || settings.voiceChannelId;
+  const player = session.player || getPlayer(session.client, guildId);
+  if (!session.current || !player) throw new Error("There is no active track to force-fix.");
+
+  const channelId = session.voiceChannelId || settings.voiceChannelId || player.voiceChannelId;
   const channel = guild.channels.cache.get(channelId);
   if (!channel || channel.type !== 2) throw new Error("The saved music voice channel no longer exists.");
 
@@ -670,22 +570,14 @@ async function forceFixMusic(guild, requesterId) {
   settings.ownerId = settings.ownerId || requesterId;
   savePersistent();
 
-  session.advancing = true;
-  try {
-    stopNowPlayingUpdater(session);
-    session.player.stop(true);
-    const old = getVoiceConnection(guildId);
-    if (old) old.destroy();
-    session.connection = null;
-    session.voiceChannelId = null;
-
-    await new Promise(resolve => setTimeout(resolve, 900));
-    await connectToChannel(guild, channel);
-    await startCurrent(guildId, track, Math.min(elapsed, Math.max(0, track.duration - 1)));
-    return { track, elapsed, channelId: channel.id };
-  } finally {
-    session.advancing = false;
-  }
+  stopNowPlayingUpdater(session);
+  await player.destroy("Vyne force-fix music").catch(() => {});
+  session.player = null;
+  session.voiceChannelId = null;
+  await new Promise(resolve => setTimeout(resolve, 700));
+  await connectToChannel(session.client, guild, channel);
+  await startCurrent(session.client, guildId, track, Math.min(elapsed, Math.max(0, track.duration - 1)));
+  return { track, elapsed, channelId: channel.id };
 }
 
 function requireVoice(interaction) {
@@ -700,6 +592,8 @@ async function handleMusicCommand(interaction, premiumActive) {
   const sub = interaction.options.getSubcommand();
   const settings = stateFor(guildId);
   const session = sessionFor(guildId);
+  const client = interaction.client;
+  setupLavalink(client);
 
   if (["autoplay", "fairplay", "247"].includes(sub) && !premiumActive(interaction.user.id, guildId)) {
     return {
@@ -715,64 +609,55 @@ async function handleMusicCommand(interaction, premiumActive) {
   if (sub === "play") {
     const channel = requireVoice(interaction);
     const query = interaction.options.getString("query", true);
-    // All slash commands are acknowledged centrally by handleInteraction().
-    // Do not call deferReply() here: doing so after the central ACK leaves the
-    // interaction stuck in "Thinking..." and causes InteractionAlreadyReplied.
-    const track = await resolveTrack(query, interaction.user);
-
-    const connection = getVoiceConnection(guildId);
-    if (connection && session.voiceChannelId && session.voiceChannelId !== channel.id) {
-      return interaction.editReply(payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${session.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning));
+    const existing = getPlayer(client, guildId);
+    if (existing?.voiceChannelId && existing.voiceChannelId !== channel.id) {
+      return interaction.editReply(payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${existing.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning));
     }
 
-    await connectToChannel(interaction.guild, channel);
+    await connectToChannel(client, interaction.guild, channel);
+    const track = await resolveTrack(query, interaction.user, session.player);
 
-    if (session.current || session.player.state.status === AudioPlayerStatus.Playing) {
+    if (session.current) {
       if (settings.fairplay && queuePositionFor(session, interaction.user.id) >= 2) {
         return interaction.editReply(payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning));
       }
       session.queue.push(track);
-      return interaction.editReply(payloadEmbed("➕ Added to queue", `${trackLine(track)}\n\nPosition: **#${session.queue.length}**`, COLORS.success));
+      return interaction.editReply(payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success));
     }
 
-    await startCurrent(guildId, track);
+    await startCurrent(client, guildId, track);
     return sendNowPlayingCard(interaction, guildId);
   }
 
   if (sub === "pause") {
-    if (!session.current) throw new Error("Nothing is currently playing.");
-    if (!session.player.pause()) return payloadEmbed("⏸️ Already paused", "The current track is already paused.", COLORS.warning);
+    if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
+    if (session.player.paused) return payloadEmbed("⏸️ Already paused", "The current track is already paused.", COLORS.warning);
+    await session.player.pause();
     return payloadEmbed("⏸️ Paused", `Paused **${session.current.title}**.`, COLORS.success);
   }
 
   if (sub === "resume") {
-    if (!session.current) throw new Error("Nothing is currently playing.");
-    if (!session.player.unpause()) return payloadEmbed("▶️ Already playing", "The current track is not paused.", COLORS.warning);
+    if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
+    if (!session.player.paused) return payloadEmbed("▶️ Already playing", "The current track is not paused.", COLORS.warning);
+    await session.player.resume();
     return payloadEmbed("▶️ Resumed", `Resumed **${session.current.title}**.`, COLORS.success);
   }
 
   if (sub === "skip") {
-    if (!session.current) throw new Error("Nothing is currently playing.");
-    session.advancing = true;
-    try {
-      session.player.stop(true);
-      await advance(guildId, "skipped");
-    } finally {
-      session.advancing = false;
-    }
+    if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
+    await session.player.stopPlaying(false, false);
+    await advance(client, guildId, "skipped");
     return payloadEmbed("⏭️ Skipped", session.current ? `Now playing **${session.current.title}**.` : "The queue is empty.");
   }
 
   if (sub === "stop") {
-    session.advancing = true;
-    session.player.stop(true);
+    if (session.player) await session.player.stopPlaying(true, false).catch(() => {});
     session.queue = [];
     session.current = null;
     session.lastRequester = null;
     session.loop = "off";
     stopNowPlayingUpdater(session);
-    session.advancing = false;
-    if (!settings.always247) scheduleIdleDisconnect(guildId);
+    if (!settings.always247) scheduleIdleDisconnect(client, guildId);
     return payloadEmbed("⏹️ Stopped", settings.always247 ? "Playback stopped. 24/7 is still keeping Vyne in the voice channel." : "Playback stopped and the queue was cleared.", COLORS.success);
   }
 
@@ -793,29 +678,24 @@ async function handleMusicCommand(interaction, premiumActive) {
     session.volume = volume;
     settings.volume = volume;
     savePersistent();
-    const resource = session.player.state.resource;
-    if (resource?.volume) resource.volume.setVolume(volume / 100);
+    if (session.player) await session.player.setVolume(volume);
     return payloadEmbed("🔊 Volume updated", `Volume is now **${volume}%**.`, COLORS.success);
   }
 
   if (sub === "seek") {
-    if (!session.current) throw new Error("Nothing is currently playing.");
+    if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
     const seconds = interaction.options.getInteger("seconds", true);
     if (seconds >= session.current.duration) throw new Error("That seek position is beyond the track length.");
-    const current = { ...session.current };
-    session.advancing = true;
-    try {
-      session.player.stop(true);
-      await startCurrent(guildId, current, seconds);
-    } finally {
-      session.advancing = false;
-    }
-    return payloadEmbed("⏩ Seeked", `Jumped to **${formatDuration(seconds)}** in **${current.title}**.`, COLORS.success);
+    await session.player.seek(seconds * 1000);
+    session.current.seek = seconds;
+    session.current.startedAt = Date.now();
+    return payloadEmbed("⏩ Seeked", `Jumped to **${formatDuration(seconds)}** in **${session.current.title}**.`, COLORS.success);
   }
 
   if (sub === "loop") {
     const mode = interaction.options.getString("mode", true);
     session.loop = mode;
+    if (session.player) await session.player.setRepeatMode("off").catch(() => {});
     return payloadEmbed("🔁 Loop updated", `Loop mode: **${mode}**.`, COLORS.success);
   }
 
@@ -842,7 +722,7 @@ async function handleMusicCommand(interaction, premiumActive) {
 
   if (sub === "join") {
     const channel = requireVoice(interaction);
-    await connectToChannel(interaction.guild, channel);
+    await connectToChannel(client, interaction.guild, channel);
     settings.voiceChannelId = channel.id;
     settings.ownerId = interaction.user.id;
     savePersistent();
@@ -856,11 +736,9 @@ async function handleMusicCommand(interaction, premiumActive) {
     savePersistent();
     session.queue = [];
     session.current = null;
-    session.player.stop(true);
     stopNowPlayingUpdater(session);
-    const connection = getVoiceConnection(guildId);
-    if (connection) connection.destroy();
-    session.connection = null;
+    if (session.player) await session.player.destroy("Music disconnect").catch(() => {});
+    session.player = null;
     session.voiceChannelId = null;
     return payloadEmbed("👋 Disconnected", "Vyne left the voice channel and cleared the music session.", COLORS.success);
   }
@@ -885,18 +763,16 @@ async function handleMusicCommand(interaction, premiumActive) {
     if (sub === "247") {
       settings.always247 = enabled;
       if (enabled) {
-        const channel = interaction.member?.voice?.channel;
-        if (!channel) throw new Error("Join the voice channel you want Vyne to stay in, then enable 24/7.");
-        await connectToChannel(interaction.guild, channel);
+        const channel = requireVoice(interaction);
+        await connectToChannel(client, interaction.guild, channel);
         settings.voiceChannelId = channel.id;
         settings.ownerId = interaction.user.id;
       } else {
         settings.voiceChannelId = null;
         settings.ownerId = null;
-        if (!session.current) {
-          const connection = getVoiceConnection(guildId);
-          if (connection) connection.destroy();
-          session.connection = null;
+        if (!session.current && session.player) {
+          await session.player.destroy("24/7 disabled").catch(() => {});
+          session.player = null;
           session.voiceChannelId = null;
         }
       }
@@ -913,6 +789,7 @@ async function handleMusicCommand(interaction, premiumActive) {
 }
 
 async function restore247(client, premiumActive) {
+  setupLavalink(client);
   clientUserIdFallback = client.user?.id || "vyne";
   for (const [guildId, settings] of Object.entries(persistent)) {
     if (!settings?.always247 || !settings.voiceChannelId || !settings.ownerId) continue;
@@ -927,7 +804,7 @@ async function restore247(client, premiumActive) {
     const channel = guild.channels.cache.get(settings.voiceChannelId);
     if (!channel || channel.type !== 2) continue;
     try {
-      await connectToChannel(guild, channel);
+      await connectToChannel(client, guild, channel);
       console.log(`[Music] Restored 24/7 connection in ${guild.name}.`);
     } catch (err) {
       console.error(`[Music] Failed to restore 24/7 in ${guild.name}:`, err?.message || err);
@@ -944,5 +821,6 @@ module.exports = {
   handleMusicCommand,
   restore247,
   forceFixMusic,
-  flushMusicData
+  flushMusicData,
+  setupLavalink
 };
