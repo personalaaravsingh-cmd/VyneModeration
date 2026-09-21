@@ -28,6 +28,7 @@ const {
 
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const os = require("os");
 const { handleMusicCommand, restore247, forceFixMusic, flushMusicData } = require("./music");
 
@@ -366,7 +367,9 @@ function defaultGuildConfig() {
         transcriptChannelId: null,
         autoCloseMs: 0,
         maxOpenPerUser: 1,
-        advancedEnabled: false
+        advancedEnabled: false,
+        panelChannelId: null,
+        panelMessageId: null
       }
     },
     notifications: {
@@ -471,7 +474,9 @@ function defaultGuildConfig() {
       hubChannelId: null,
       controlChannelId: null,
       limitDefault: 0,
-      rooms: {}
+      rooms: {},
+      panelChannelId: null,
+      panelMessageId: null
     },
     analytics: {
       enabled: false
@@ -1387,15 +1392,15 @@ async function handleAICommand(interaction) {
   }
 }
 
-function voiceMasterPanelPayload() {
-  return {
-    embeds: [
-      embed(
-        "🎙️ VoiceMaster Controls",
-        "**Create your room**\nJoin the configured VoiceMaster hub and Vyne will automatically create a temporary room.\n\n**Manage your room**\nUse the menu below while you are inside your temporary room. Every action response is private to you.",
-        COLORS.cyan
-      )
-    ],
+function voiceMasterPanelPayload(guildId = null) {
+  const v = guildId ? getGuildData(guildId).voicemaster : null;
+  const panelEmbed = embed(
+    "🎙️ VoiceMaster Controls",
+    "**Create your room**\nJoin the configured VoiceMaster hub and Vyne will automatically create a temporary room.\n\n**Manage your room**\nUse the menu below while you are inside your temporary room. Every action response is private to you.",
+    COLORS.cyan
+  );
+  panelEmbed.setFooter({ text: `Vyne • VoiceMaster Panel • ${encodePanelState(v ? { enabled: v.enabled, categoryId: v.categoryId, hubChannelId: v.hubChannelId, controlChannelId: v.controlChannelId, limitDefault: v.limitDefault } : {})}` });
+  return { embeds: [panelEmbed],
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -1417,6 +1422,43 @@ function voiceMasterPanelPayload() {
   };
 }
 
+async function upsertVoiceMasterPanel(guild, channel = null) {
+  if (!guild) return null;
+  const v = getGuildData(guild.id).voicemaster;
+  channel = channel || guild.channels.cache.get(v.panelChannelId || v.controlChannelId);
+  if (!channel?.isTextBased() || !channel.viewable) throw new Error("The selected VoiceMaster panel channel is not usable by Vyne.");
+  let message = null;
+  if (v.panelMessageId) message = await channel.messages.fetch(v.panelMessageId).catch(() => null);
+  if (message) await message.edit(voiceMasterPanelPayload(guild.id));
+  else message = await channel.send(voiceMasterPanelPayload(guild.id));
+  v.panelChannelId = channel.id; v.panelMessageId = message.id; v.controlChannelId = v.controlChannelId || channel.id;
+  writeJSON(FILES.config, db.config);
+  return message;
+}
+async function recoverVoiceMasterPanel(guild) {
+  const v = getGuildData(guild.id).voicemaster;
+  if (v.panelChannelId && v.panelMessageId) {
+    const channel = guild.channels.cache.get(v.panelChannelId);
+    const message = channel?.isTextBased() ? await channel.messages.fetch(v.panelMessageId).catch(() => null) : null;
+    if (message) { await message.edit(voiceMasterPanelPayload(guild.id)).catch(() => {}); return message; }
+  }
+  const channels = guild.channels.cache.filter(c => c.isTextBased() && c.viewable).first(40);
+  for (const channel of channels) {
+    try {
+      const messages = await channel.messages.fetch({ limit: 50, cache: false });
+      const message = messages.find(m => m.author?.id === client.user.id && messageHasCustomId(m, "vm_panel_menu"));
+      if (!message) continue;
+      const state = decodePanelState(message.embeds?.[0]?.footer?.text, "VoiceMaster Panel");
+      if (state) Object.assign(v, state);
+      v.panelChannelId = channel.id; v.panelMessageId = message.id; v.controlChannelId = v.controlChannelId || channel.id;
+      v.enabled = v.enabled || Boolean(v.hubChannelId);
+      writeJSON(FILES.config, db.config);
+      await message.edit(voiceMasterPanelPayload(guild.id)).catch(() => {});
+      return message;
+    } catch {}
+  }
+  return null;
+}
 function voiceMasterMemberModal(customId, title, label, placeholder) {
   return new ModalBuilder()
     .setCustomId(customId)
@@ -2462,11 +2504,97 @@ function ticketBuilderPanel(guildId) {
   };
 }
 
+function encodePanelState(value) {
+  try { return zlib.deflateRawSync(Buffer.from(JSON.stringify(value))).toString("base64url"); }
+  catch { return ""; }
+}
+function decodePanelState(text, prefix) {
+  try {
+    const value = String(text || "");
+    const marker = `Vyne • ${prefix} • `;
+    if (!value.startsWith(marker)) return null;
+    return JSON.parse(zlib.inflateRawSync(Buffer.from(value.slice(marker.length).trim(), "base64url")).toString("utf8"));
+  } catch { return null; }
+}
+function messageHasCustomId(message, customId) {
+  try {
+    return message.components?.some(row => row.components?.some(component => {
+      const data = typeof component.toJSON === "function" ? component.toJSON() : component;
+      return data?.custom_id === customId || data?.customId === customId;
+    })) || false;
+  } catch { return false; }
+}
+async function refreshTicketPanel(guildId) {
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) return null;
+  const cfg = getGuildData(guildId), p = cfg.tickets?.premium;
+  if (!cfg.tickets?.enabled || !p?.panelChannelId || !p?.panelMessageId) return null;
+  const channel = guild.channels.cache.get(p.panelChannelId);
+  if (!channel?.isTextBased()) return null;
+  try {
+    const message = await channel.messages.fetch(p.panelMessageId);
+    await message.edit(ticketPanelPayload(guildId));
+    return message;
+  } catch (err) {
+    if (err?.code !== 10008 && err?.code !== 10003) console.error("Ticket panel refresh failed:", err?.message || err);
+    p.panelMessageId = null;
+    writeJSON(FILES.config, db.config);
+    return null;
+  }
+}
+async function upsertTicketPanel(guild, channel = null) {
+  if (!guild) return null;
+  const cfg = getGuildData(guild.id);
+  if (!cfg.tickets.enabled) return null;
+  const p = cfg.tickets.premium;
+  channel = channel || guild.channels.cache.get(p.panelChannelId);
+  if (!channel?.isTextBased() || !channel.viewable) throw new Error("The selected ticket panel channel is not usable by Vyne.");
+  let message = null;
+  if (p.panelMessageId) message = await channel.messages.fetch(p.panelMessageId).catch(() => null);
+  if (message) await message.edit(ticketPanelPayload(guild.id));
+  else message = await channel.send(ticketPanelPayload(guild.id));
+  p.panelChannelId = channel.id; p.panelMessageId = message.id;
+  cfg.tickets.enabled = true;
+  writeJSON(FILES.config, db.config);
+  return message;
+}
+async function recoverTicketPanel(guild) {
+  const cfg = getGuildData(guild.id), p = cfg.tickets.premium;
+  if (p.panelChannelId && p.panelMessageId) {
+    const message = await refreshTicketPanel(guild.id);
+    if (message) return message;
+  }
+  const channels = guild.channels.cache.filter(c => c.isTextBased() && c.viewable).first(40);
+  for (const channel of channels) {
+    try {
+      const messages = await channel.messages.fetch({ limit: 50, cache: false });
+      const message = messages.find(m => m.author?.id === client.user.id && messageHasCustomId(m, "vyne_ticket_category"));
+      if (!message) continue;
+      const state = decodePanelState(message.embeds?.[0]?.footer?.text, "Ticket Panel");
+      if (state?.premium) Object.assign(p, state.premium);
+      else {
+        const menu = message.components?.flatMap(row => row.components || [])
+          .map(component => typeof component.toJSON === "function" ? component.toJSON() : component)
+          .find(component => component?.custom_id === "vyne_ticket_category");
+        if (menu?.options?.length) p.categories = menu.options.map(o => ({
+          id: o.value, name: o.label || "Category", description: o.description || "General questions or support.",
+          emoji: typeof o.emoji === "object" ? (o.emoji.name || "🎫") : (o.emoji || "🎫"), questions: []
+        }));
+      }
+      cfg.tickets.enabled = true; p.panelChannelId = channel.id; p.panelMessageId = message.id;
+      writeJSON(FILES.config, db.config);
+      await message.edit(ticketPanelPayload(guild.id)).catch(() => {});
+      return message;
+    } catch {}
+  }
+  return null;
+}
 function ticketPanelPayload(guildId) {
   const cfg = getGuildData(guildId);
   const p = cfg.tickets.premium;
   const e = embed(`${p.buttonEmoji || "🎫"} ${p.panelTitle || "Vyne Support Center"}`, p.panelDescription || "Need help? Create a private ticket.", p.panelColor || COLORS.primary);
   if (p.panelImage) e.setImage(p.panelImage);
+  e.setFooter({ text: `Vyne • Ticket Panel • ${encodePanelState({ premium: p })}` });
 
   const components = [];
   const menu = new StringSelectMenuBuilder()
@@ -3421,8 +3549,9 @@ async function handleInteraction(interaction) {
         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const p=getGuildData(interaction.guildId).tickets.premium;
         Object.assign(p,{panelTitle:"Vyne Support Center",panelDescription:"Need help? Open a private support ticket and our staff will assist you.",buttonLabel:"Create Ticket",buttonEmoji:"🎫",panelImage:null,categories:[{id:"general",name:"General Support",description:"General questions or support.",emoji:"🎫",questions:[]}],claimEnabled:true,closeReasonRequired:false,transcriptEnabled:true,autoCloseMs:0,maxOpenPerUser:1});
-        getGuildData(interaction.guildId).tickets.advancedEnabled=false;
+        getGuildData(interaction.guildId).tickets.premium.advancedEnabled=false;
         writeJSON(FILES.config,db.config);
+        await refreshTicketPanel(interaction.guildId).catch(err => console.error("Ticket panel update failed:", err?.message || err));
         return interaction.update(ticketBuilderPanel(interaction.guildId));
       }
       if (interaction.customId.startsWith("automod_adv_")) {
@@ -3570,15 +3699,15 @@ async function handleInteraction(interaction) {
         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const p=getGuildData(interaction.guildId).tickets.premium;
         p.panelTitle=interaction.fields.getTextInputValue("panel_title"); p.panelDescription=interaction.fields.getTextInputValue("panel_description"); p.buttonLabel=interaction.fields.getTextInputValue("button_label"); p.buttonEmoji=interaction.fields.getTextInputValue("button_emoji")||"🎫"; p.panelImage=interaction.fields.getTextInputValue("panel_image")||null;
-        getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
+        getGuildData(interaction.guildId).tickets.premium.advancedEnabled=true; writeJSON(FILES.config,db.config); await refreshTicketPanel(interaction.guildId).catch(err => console.error("Ticket panel update failed:", err?.message || err));
         return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
       if (interaction.customId === "ticket_builder_category_modal") {
         if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const p=getGuildData(interaction.guildId).tickets.premium; if(p.categories.length>=10) return safeReply(interaction,{embeds:[errorEmbed("Category limit","You can have up to 10 categories.")],flags:MessageFlags.Ephemeral});
-        p.categories.push({id:`cat_${Date.now().toString(36)}`,name:interaction.fields.getTextInputValue("category_name"),description:interaction.fields.getTextInputValue("category_description"),emoji:interaction.fields.getTextInputValue("category_emoji")||"🎫"});
-        getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
+        p.categories.push({id:`cat_${Date.now().toString(36)}`,name:interaction.fields.getTextInputValue("category_name"),description:interaction.fields.getTextInputValue("category_description"),emoji:interaction.fields.getTextInputValue("category_emoji")||"🎫",questions:[]});
+        getGuildData(interaction.guildId).tickets.premium.advancedEnabled=true; writeJSON(FILES.config,db.config); await refreshTicketPanel(interaction.guildId).catch(err => console.error("Ticket panel update failed:", err?.message || err));
         return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
       if (interaction.customId.startsWith("ticket_builder_question_modal_")) {
@@ -3593,8 +3722,8 @@ async function handleInteraction(interaction) {
          const placeholder=interaction.fields.getTextInputValue("question_placeholder").trim()||"Type your answer...";
          const required=!["no","false","0"].includes((interaction.fields.getTextInputValue("question_required")||"yes").toLowerCase().trim());
          category.questions.push({label,placeholder,required});
-         getGuildData(interaction.guildId).tickets.advancedEnabled=true;
-         writeJSON(FILES.config,db.config);
+         getGuildData(interaction.guildId).tickets.premium.advancedEnabled=true;
+         writeJSON(FILES.config,db.config); await refreshTicketPanel(interaction.guildId).catch(err => console.error("Ticket panel update failed:", err?.message || err));
          return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
        }
        if (interaction.customId === "welcome_advanced_modal") {
@@ -3819,8 +3948,8 @@ async function handleInteraction(interaction) {
       if(sub==="close"){ await deferOnce(interaction, MessageFlags.Ephemeral); return closeTicketInteraction(interaction,"No reason provided"); }
       if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
       if(sub==="setup"){const staff=interaction.options.getRole("staff_role");await deferOnce(interaction);let categoryId=cfg.tickets.categoryId||interaction.channel.parentId||null;if(!categoryId){const category=await interaction.guild.channels.create({name:"Vyne Tickets",type:ChannelType.GuildCategory,reason:"Vyne ticket setup"});categoryId=category.id;}cfg.tickets.enabled=true;cfg.tickets.categoryId=categoryId;cfg.tickets.staffRoleId=staff.id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Tickets configured",`Staff role: ${staff}\nCategory: <#${categoryId}>\n\nFree users now get the pre-made panel.`)]});}
-      if(sub==="panel"){if(!cfg.tickets.enabled)return safeReply(interaction,{embeds:[errorEmbed("Not configured","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});await interaction.channel.send(ticketPanelPayload(interaction.guildId));return safeReply(interaction,{embeds:[success("Ticket panel sent","The panel is ready.")],flags:MessageFlags.Ephemeral});}
-      if(sub==="builder"){if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);cfg.tickets.advancedEnabled=true;writeJSON(FILES.config,db.config);return safeReply(interaction,ticketBuilderPanel(interaction.guildId));}
+      if(sub==="panel"){if(!cfg.tickets.enabled)return safeReply(interaction,{embeds:[errorEmbed("Not configured","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});const panel=await upsertTicketPanel(interaction.guild,interaction.channel);return safeReply(interaction,{embeds:[success("Ticket panel ready",`Persistent panel: ${panel}\n\nVyne will restore and update this same panel after restarts.`)],flags:MessageFlags.Ephemeral});}
+      if(sub==="builder"){if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);cfg.tickets.premium.advancedEnabled=true;writeJSON(FILES.config,db.config);return safeReply(interaction,ticketBuilderPanel(interaction.guildId));}
     }
 
     if(command==="welcome"){
@@ -3836,7 +3965,7 @@ async function handleInteraction(interaction) {
       if(!premiumActive(interaction.user.id,interaction.guildId))return requirePremium(interaction);
       const sub=interaction.options.getSubcommand(),v=getGuildData(interaction.guildId).voicemaster;
       if(sub==="setup"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});await deferOnce(interaction);let hub=interaction.options.getChannel("hub"),cat=interaction.options.getChannel("category"),control=interaction.options.getChannel("control_channel");if(!cat)cat=await interaction.guild.channels.create({name:"Vyne Voice",type:ChannelType.GuildCategory,reason:"Vyne VoiceMaster setup"});if(!hub)hub=await interaction.guild.channels.create({name:"➕ Join to Create",type:ChannelType.GuildVoice,parent:cat.id,reason:"Vyne VoiceMaster setup"});v.enabled=true;v.categoryId=cat.id;v.hubChannelId=hub.id;v.controlChannelId=control?.id||v.controlChannelId||interaction.channelId;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("VoiceMaster configured",`Hub: ${hub}\nCategory: <#${cat.id}>`)]});}
-      if(sub==="panel")return safeReply(interaction,voiceMasterPanelPayload());
+      if(sub==="panel"){const panel=await upsertVoiceMasterPanel(interaction.guild,interaction.channel);return safeReply(interaction,{embeds:[success("VoiceMaster panel ready",`Persistent panel: ${panel}\n\nVyne will restore and update this same panel after restarts.`)],flags:MessageFlags.Ephemeral});}
       if(sub==="panelsend"){
         if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions to send a VoiceMaster panel.")],flags:MessageFlags.Ephemeral});
         const channel=interaction.options.getChannel("channel");
@@ -4135,7 +4264,9 @@ client.once("clientReady", async readyClient => {
   for (const guild of client.guilds.cache.values()) {
     recoverVoiceMasterSetup(guild)
       .then(() => cleanupVoiceMasterRooms(guild))
-      .catch(err => console.error("VoiceMaster startup recovery error:", err?.message || err));
+      .then(() => recoverVoiceMasterPanel(guild))
+      .then(() => recoverTicketPanel(guild))
+      .catch(err => console.error("Startup persistence recovery error:", err?.message || err));
   }
   console.log(`✦ Vyne is online.`);
   await restore247(readyClient, premiumActive).catch(err => console.error("Music 24/7 restore error:", err?.message || err));
