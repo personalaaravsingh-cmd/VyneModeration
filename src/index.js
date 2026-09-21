@@ -1573,16 +1573,14 @@ function helpPayload(page = "home") {
 
 async function sendHelp(interaction, page = "home") {
   try {
-    // /help is intentionally public and is not globally deferred. Reply directly so
-    // the command can never remain stuck in Discord's "Vyne is thinking..." state.
-    if (interaction.deferred || interaction.replied) return interaction.editReply(helpPayload(page));
-    return interaction.reply(helpPayload(page));
+    // /help is acknowledged by the global interaction gate above. Only edit the
+    // deferred response here; never attempt a second initial reply.
+    return interaction.editReply(helpPayload(page));
   } catch (err) {
     console.error("Help panel error:", err?.stack || err);
-    return safeReply(interaction, {
-      embeds: [errorEmbed("Help panel failed", "Vyne could not open the help panel. Check the bot logs for the exact error.")],
-      flags: MessageFlags.Ephemeral
-    });
+    return interaction.editReply({
+      embeds: [errorEmbed("Help panel failed", "Vyne could not open the help panel. Check the bot logs for the exact error.")]
+    }).catch(() => null);
   }
 }
 
@@ -2647,15 +2645,14 @@ async function handleInteraction(interaction) {
   try {
     // Acknowledge slash commands immediately so Discord never reaches the 3-second timeout
     // while Vyne is doing config/database/API work. Modal-based commands must remain un-deferred.
-    if (interaction.isChatInputCommand()) {
-      const isWelcomeAdvanced =
-        interaction.commandName === "welcome" &&
-        interaction.options.getSubcommand(false) === "advanced";
-
-      if (!isWelcomeAdvanced && interaction.commandName !== "help" && !interaction.replied && !interaction.deferred) {
-        console.log(`📨 Interaction received: /${interaction.commandName}`);
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      }
+    if (interaction.isChatInputCommand() && !interaction.replied && !interaction.deferred) {
+      // ACK every slash command immediately. This is deliberately before any command
+      // routing, analytics, Premium checks or database work so Discord can never show
+      // "The application did not respond" because a handler took too long.
+      console.log(`📨 Interaction received: /${interaction.commandName}`);
+      await interaction.deferReply({
+        flags: interaction.commandName === "help" ? undefined : MessageFlags.Ephemeral
+      });
     }
 
     if (interaction.isStringSelectMenu()) {
