@@ -156,24 +156,29 @@ async function cleanupVoiceMasterRooms(guild) {
   const cfg = getGuildData(guild.id);
   const rooms = cfg.voicemaster?.rooms;
   if (!rooms || typeof rooms !== "object") return;
+
+  // Restore persisted temporary rooms after a bot restart.
+  // Do not delete empty rooms here: a restart can happen while a room is
+  // temporarily empty, and deleting it would make the old VoiceMaster room
+  // stop working after the bot comes back online.
   let changed = false;
   for (const [channelId, room] of Object.entries(rooms)) {
     const channel = guild.channels.cache.get(channelId);
-    if (!channel) {
+
+    if (!channel || channel.type !== ChannelType.GuildVoice) {
       delete rooms[channelId];
       tempVoiceOwners.delete(channelId);
       changed = true;
       continue;
     }
-    if (channel.type === ChannelType.GuildVoice && channel.members.size === 0) {
-      delete rooms[channelId];
-      tempVoiceOwners.delete(channelId);
-      await channel.delete("Vyne VoiceMaster stale empty room").catch(() => {});
-      changed = true;
-    } else {
-      tempVoiceOwners.set(channelId,{guildId:guild.id,ownerId:room.ownerId,createdAt:room.createdAt||Date.now()});
-    }
+
+    tempVoiceOwners.set(channelId, {
+      guildId: guild.id,
+      ownerId: room?.ownerId,
+      createdAt: room?.createdAt || channel.createdTimestamp || Date.now()
+    });
   }
+
   if (changed) writeJSON(FILES.config, db.config);
 }
 
