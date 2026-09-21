@@ -154,11 +154,11 @@ client.lavalink = new LavalinkManager({
 });
 
 client.on("raw", data => {
-  try {
-    client.lavalink.sendRawData(data);
-  } catch (err) {
-    console.error("Lavalink raw event error:", err?.message || err);
-  }
+  void Promise.resolve()
+    .then(() => client.lavalink.sendRawData(data))
+    .catch(err => {
+      console.error("Lavalink raw event error:", err?.message || err);
+    });
 });
 
 const cooldowns = new Collection();
