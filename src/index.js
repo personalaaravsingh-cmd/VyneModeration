@@ -62,6 +62,8 @@ const FILES = {
   ai: path.join(DATA_DIR, "ai.json"),
   premium: path.join(DATA_DIR, "premium.json"),
   noprefix: path.join(DATA_DIR, "noprefix.json"),
+  notes: path.join(DATA_DIR, "notes.json"),
+  suggestions: path.join(DATA_DIR, "suggestions.json"),
   analytics: path.join(DATA_DIR, "analytics.json")
 };
 
@@ -184,6 +186,8 @@ const db = {
   ai: readJSON(FILES.ai, {}),
   premium: readJSON(FILES.premium, { users: {}, guilds: {} }),
   noprefix: readJSON(FILES.noprefix, { users: {}, guilds: {} }),
+  notes: readJSON(FILES.notes, {}),
+  suggestions: readJSON(FILES.suggestions, {}),
   analytics: readJSON(FILES.analytics, {})
 };
 
@@ -1150,6 +1154,16 @@ const commands = [
       .addRoleOption(o => o.setName("staff_role").setDescription("Staff role").setRequired(true)))
     .addSubcommand(s => s.setName("panel").setDescription("Send the ticket panel."))
     .addSubcommand(s => s.setName("close").setDescription("Close the current ticket."))
+    .addSubcommand(s => s.setName("add").setDescription("Add a member to the current ticket.")
+      .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a member from the current ticket.")
+      .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true)))
+    .addSubcommand(s => s.setName("rename").setDescription("Rename the current ticket.")
+      .addStringOption(o => o.setName("name").setDescription("New channel name").setRequired(true)))
+    .addSubcommand(s => s.setName("transfer").setDescription("Transfer the ticket to a staff member.")
+      .addUserOption(o => o.setName("user").setDescription("Staff member").setRequired(true)))
+    .addSubcommand(s => s.setName("transcript").setDescription("Create a ticket transcript."))
+    .addSubcommand(s => s.setName("reopen").setDescription("Reopen a recently closed ticket."))
     .addSubcommand(s => s.setName("builder").setDescription("Open the fully customizable ticket builder • 💎 Premium.")),
 
   new SlashCommandBuilder().setName("welcome").setDescription("Configure Vyne's welcome system.")
@@ -1237,6 +1251,35 @@ const commands = [
     .addSubcommand(s => s.setName("reroll").setDescription("Reroll a giveaway.")
       .addStringOption(o => o.setName("message_id").setDescription("Giveaway message ID").setRequired(true))),
 
+  new SlashCommandBuilder().setName("security").setDescription("View Vyne security status and controls."),
+  new SlashCommandBuilder().setName("history").setDescription("View a member's moderation history.")
+    .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true)),
+  new SlashCommandBuilder().setName("case").setDescription("Manage moderation cases.")
+    .addSubcommand(s => s.setName("view").setDescription("View a moderation case.")
+      .addIntegerOption(o => o.setName("id").setDescription("Case ID").setMinValue(1).setRequired(true)))
+    .addSubcommand(s => s.setName("delete").setDescription("Delete a moderation case.")
+      .addIntegerOption(o => o.setName("id").setDescription("Case ID").setMinValue(1).setRequired(true))),
+  new SlashCommandBuilder().setName("notes").setDescription("Manage private staff notes.")
+    .addSubcommand(s => s.setName("add").setDescription("Add a note.")
+      .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true))
+      .addStringOption(o => o.setName("note").setDescription("Note").setMaxLength(1000).setRequired(true)))
+    .addSubcommand(s => s.setName("view").setDescription("View notes.")
+      .addUserOption(o => o.setName("user").setDescription("Member").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a note.")
+      .addIntegerOption(o => o.setName("id").setDescription("Note ID").setMinValue(1).setRequired(true))),
+  new SlashCommandBuilder().setName("lockdown").setDescription("Emergency server lockdown.")
+    .addSubcommand(s => s.setName("on").setDescription("Lock text channels."))
+    .addSubcommand(s => s.setName("off").setDescription("Restore text channels."))
+    .addSubcommand(s => s.setName("status").setDescription("View lockdown status.")),
+  new SlashCommandBuilder().setName("raidmode").setDescription("Manage raid protection mode.")
+    .addSubcommand(s => s.setName("on").setDescription("Enable raid mode."))
+    .addSubcommand(s => s.setName("off").setDescription("Disable raid mode."))
+    .addSubcommand(s => s.setName("status").setDescription("View raid mode status.")),
+  new SlashCommandBuilder().setName("activity").setDescription("View server activity statistics."),
+  new SlashCommandBuilder().setName("suggest").setDescription("Submit a server suggestion.")
+    .addStringOption(o => o.setName("suggestion").setDescription("Your suggestion").setMaxLength(1000).setRequired(true)),
+  new SlashCommandBuilder().setName("dashboard").setDescription("Open Vyne's interactive server dashboard."),
+
   new SlashCommandBuilder().setName("config").setDescription("Open Vyne's configuration dashboard."),
   new SlashCommandBuilder().setName("logchannel").setDescription("Set the moderation log channel.")
     .addChannelOption(o => o.setName("channel").setDescription("Channel").setRequired(true)),
@@ -1295,6 +1338,49 @@ async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
   console.log(`✅ Registered ${commands.length} guild commands.`);
+}
+
+function dashboardPayload(guildId, page = "overview") {
+  const cfg = getGuildData(guildId);
+  const a = analyticsFor(guildId);
+  const pages = {
+    overview: {
+      title: "✦ Vyne Dashboard",
+      desc: "A live overview of Vyne's server systems.",
+      color: COLORS.primary,
+      fields: [
+        { name: "🛡️ Security", value: `AutoMod: **${cfg.automod.enabled ? "ON" : "OFF"}**\\nAnti-Nuke: **${cfg.antinuke.enabled ? "ON" : "OFF"}**\\nRaid Mode: **${cfg.raid.enabled ? "ON" : "OFF"}**\\nLockdown: **${cfg.raid.lockdown ? "ON" : "OFF"}`, inline: true },
+        { name: "🎫 Tickets", value: `**${cfg.tickets.enabled ? "Enabled" : "Disabled"}**\\nOpen: **${Object.values(db.tickets[guildId] || {}).filter(t => t.open).length}**`, inline: true },
+        { name: "📊 Activity", value: `Messages: **${a.messages.toLocaleString()}**\\nCommands: **${a.commands.toLocaleString()}**\\nJoins: **${a.joins.toLocaleString()}**\\nLeaves: **${a.leaves.toLocaleString()}**`, inline: true }
+      ]
+    },
+    security: { title: "🛡️ Security", desc: "Current protection state.", color: COLORS.danger, fields: [
+      { name: "AutoMod", value: cfg.automod.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
+      { name: "Anti-Nuke", value: cfg.antinuke.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
+      { name: "Raid Mode", value: cfg.raid.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
+      { name: "Lockdown", value: cfg.raid.lockdown ? "🚨 Active" : "🟢 Inactive", inline: true }
+    ]},
+    tickets: { title: "🎫 Tickets", desc: "Ticket system status.", color: COLORS.primary, fields: [
+      { name: "System", value: cfg.tickets.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
+      { name: "Open Tickets", value: String(Object.values(db.tickets[guildId] || {}).filter(t => t.open).length), inline: true },
+      { name: "Staff Role", value: cfg.tickets.staffRoleId ? `<@&${cfg.tickets.staffRoleId}>` : "Not configured", inline: true }
+    ]},
+    analytics: { title: "📊 Analytics", desc: "Server activity counters.", color: COLORS.info, fields: [
+      { name: "Messages", value: a.messages.toLocaleString(), inline: true },
+      { name: "Commands", value: a.commands.toLocaleString(), inline: true },
+      { name: "Joins", value: a.joins.toLocaleString(), inline: true },
+      { name: "Leaves", value: a.leaves.toLocaleString(), inline: true }
+    ]},
+    configuration: { title: "⚙️ Configuration", desc: "Quick configuration links.", color: COLORS.dark, fields: [
+      { name: "Configured", value: `Logs: ${cfg.logChannelId ? `<#${cfg.logChannelId}>` : "Not set"}\\nMod Role: ${cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "Not set"}`, inline: false }
+    ]}
+  };
+  const p = pages[page] || pages.overview;
+  const menu = new StringSelectMenuBuilder().setCustomId("vyne_dashboard").setPlaceholder("Open dashboard section").addOptions(
+    [["overview","Overview","✦","Live server overview"],["security","Security","🛡️","Protection status"],["tickets","Tickets","🎫","Ticket status"],["analytics","Analytics","📊","Activity counters"],["configuration","Configuration","⚙️","Server configuration"]].map(([value,label,emoji,description]) => ({value,label,emoji,description}))
+  );
+  const e = embed(p.title,p.desc,p.color).addFields(p.fields).setFooter({text:"Vyne Dashboard • Live server data"});
+  return {embeds:[e],components:[new ActionRowBuilder().addComponents(menu)]};
 }
 
 function helpPayload(page = "home") {
@@ -1390,6 +1476,10 @@ function helpPayload(page = "home") {
         { name: "Notifications", value: "`/notify set` `/notify test` plus YouTube/Reddit feeds • ◆ Premium", inline: false },
         { name: "Reports", value: "`/report @user reason` — privately sends a member report to the configured staff log channel.", inline: false },
         { name: "Embeds", value: "`/embed` — create a custom embed with title, description, color, image, thumbnail and footer.", inline: false },
+        { name: "Dashboard", value: "`/dashboard` — interactive live server control center.", inline: false },
+        { name: "Security", value: "`/security` `/lockdown` `/raidmode` — protection status and emergency controls.", inline: false },
+        { name: "Staff Tools", value: "`/history` `/case` `/notes` — moderation records and private staff notes.", inline: false },
+        { name: "Suggestions", value: "`/suggest` — submit a server suggestion.", inline: false },
         { name: "Reminders", value: "`/remind 10m message` — create a personal server reminder.", inline: false }
       ]
     },
@@ -2275,7 +2365,8 @@ async function handleNoPrefixMessage(message) {
   const args = parts;
   const supported = new Set([
     "help","ping","botstats","serverinfo","userinfo","avatar","level","leaderboard",
-    "balance","daily","lock","unlock","purge","warn","kick","ban","timeout","slowmode"
+    "balance","daily","lock","unlock","purge","warn","kick","ban","timeout","slowmode",
+    "security","history","activity","dashboard"
   ]);
   if (!supported.has(name)) return false;
 
@@ -2563,12 +2654,15 @@ async function handleInteraction(interaction) {
 
       if (!isWelcomeAdvanced && !interaction.replied && !interaction.deferred) {
         console.log(`📨 Interaction received: /${interaction.commandName}`);
-        await interaction.deferReply();
+        const publicCommands = new Set(["help"]);
+        const flags = publicCommands.has(interaction.commandName) ? undefined : MessageFlags.Ephemeral;
+        await interaction.deferReply(flags === undefined ? {} : { flags });
       }
     }
 
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "vyne_help") return interaction.update(helpPayload(interaction.values[0]));
+      if (interaction.customId === "vyne_dashboard") return interaction.update(dashboardPayload(interaction.guildId, interaction.values[0]));
       if (interaction.customId === "vyne_automod") {
         if (!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const key=interaction.values[0];
@@ -2979,6 +3073,83 @@ async function handleInteraction(interaction) {
     if(["balance","daily","pay"].includes(command)){if(!db.economy[interaction.guildId])db.economy[interaction.guildId]={};const get=id=>db.economy[interaction.guildId][id]||{coins:0,lastDaily:0};if(command==="balance"){const u=interaction.options.getUser("user")||interaction.user,d=get(u.id);return safeReply(interaction,{embeds:[embed("💰 Balance",`<@${u.id}> has **${d.coins.toLocaleString()}** coins.`,COLORS.warning)]});}if(command==="daily"){const d=get(interaction.user.id);if(Date.now()-d.lastDaily<86400000)return safeReply(interaction,{embeds:[warningEmbed("Daily already claimed",`Try again <t:${Math.floor((d.lastDaily+86400000)/1000)}:R>.`)]});d.coins+=250;d.lastDaily=Date.now();db.economy[interaction.guildId][interaction.user.id]=d;writeJSON(FILES.economy,db.economy);return safeReply(interaction,{embeds:[success("Daily claimed","You received **250** coins.")]});}const u=interaction.options.getUser("user"),amount=interaction.options.getInteger("amount"),sender=get(interaction.user.id),receiver=get(u.id);if(u.id===interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Invalid recipient","You cannot pay yourself.")],flags:MessageFlags.Ephemeral});if(sender.coins<amount)return safeReply(interaction,{embeds:[errorEmbed("Insufficient funds",`You only have **${sender.coins}** coins.`)],flags:MessageFlags.Ephemeral});sender.coins-=amount;receiver.coins+=amount;db.economy[interaction.guildId][interaction.user.id]=sender;db.economy[interaction.guildId][u.id]=receiver;writeJSON(FILES.economy,db.economy);return safeReply(interaction,{embeds:[success("Payment sent",`Sent **${amount}** coins to <@${u.id}>.`)]});}
 
     if(command==="giveaway"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand();if(sub==="start"){const dur=interaction.options.getInteger("duration")*1000,w=interaction.options.getInteger("winners"),prize=interaction.options.getString("prize"),e=embed("🎉 Giveaway",`React with 🎉 to enter!\n\n**Prize:** ${prize}\n**Winners:** ${w}\n**Ends:** <t:${Math.floor((Date.now()+dur)/1000)}:R>`,COLORS.primary),msg=await interaction.channel.send({embeds:[e]});await msg.react("🎉");if(!db.giveaways[interaction.guildId])db.giveaways[interaction.guildId]={};db.giveaways[interaction.guildId][msg.id]={channelId:interaction.channelId,prize,winners:w,endAt:Date.now()+dur,ended:false};writeJSON(FILES.giveaways,db.giveaways);return safeReply(interaction,{embeds:[success("Giveaway started",`Giveaway ID: \`${msg.id}\``)],flags:MessageFlags.Ephemeral});}const id=interaction.options.getString("message_id"),g=db.giveaways[interaction.guildId]?.[id];if(!g)return safeReply(interaction,{embeds:[errorEmbed("Giveaway not found","I couldn't find that giveaway.")],flags:MessageFlags.Ephemeral});if(sub==="reroll"&&!g.ended)return safeReply(interaction,{embeds:[warningEmbed("Giveaway still active","End the giveaway before rerolling.")],flags:MessageFlags.Ephemeral});const ch=interaction.guild.channels.cache.get(g.channelId),msg=await ch?.messages.fetch(id).catch(()=>null);if(!msg)return safeReply(interaction,{embeds:[errorEmbed("Message missing","The giveaway message no longer exists.")],flags:MessageFlags.Ephemeral});const users=await msg.reactions.cache.get("🎉")?.users.fetch().catch(()=>new Collection())||new Collection(),entries=users.filter(u=>!u.bot).map(u=>u);if(!entries.length)return safeReply(interaction,{embeds:[warningEmbed("No entries","There are no eligible entrants.")],flags:MessageFlags.Ephemeral});const picks=[];while(picks.length<Math.min(g.winners,entries.length)){const pick=entries[Math.floor(Math.random()*entries.length)];if(!picks.some(u=>u.id===pick.id))picks.push(pick);}if(sub==="end")g.ended=true;writeJSON(FILES.giveaways,db.giveaways);await ch.send({embeds:[success(sub==="end"?"🎉 Giveaway ended":"🎉 Giveaway rerolled",`${picks.map(u=>`<@${u.id}>`).join(", ")} won **${g.prize}**.`)]});return safeReply(interaction,{embeds:[success("Giveaway processed","Winners have been announced.")],flags:MessageFlags.Ephemeral});}
+
+    if(command==="security"){
+      const cfg=getGuildData(interaction.guildId);
+      return safeReply(interaction,{embeds:[embed("🛡️ Vyne Security","Live protection status.",COLORS.danger).addFields(
+        {name:"AutoMod",value:cfg.automod.enabled?"🟢 Enabled":"🔴 Disabled",inline:true},
+        {name:"Anti-Nuke",value:cfg.antinuke.enabled?"🟢 Enabled":"🔴 Disabled",inline:true},
+        {name:"Raid Mode",value:cfg.raid.enabled?"🟢 Enabled":"🔴 Disabled",inline:true},
+        {name:"Lockdown",value:cfg.raid.lockdown?"🚨 Active":"🟢 Inactive",inline:true}
+      )]});
+    }
+    if(command==="history"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const user=interaction.options.getUser("user"), cases=(db.cases[interaction.guildId]||[]).filter(x=>x.targetId===user.id).slice(-15).reverse(), warnings=db.warnings[interaction.guildId]?.[user.id]||[];
+      const value=cases.length?cases.map(x=>`**#${x.id}** • ${x.type} • <@!${x.moderatorId}> • ${fmtDate(x.timestamp)}\\n${truncate(x.reason,180)}`).join("\\n\\n"):"No moderation cases found.";
+      return safeReply(interaction,{embeds:[embed("📜 Moderation History",`<@!${user.id}>\\n\\n${value}`,COLORS.info).addFields({name:"Warnings",value:String(warnings.length),inline:true},{name:"Cases",value:String(cases.length),inline:true})]});
+    }
+    if(command==="case"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand(),id=interaction.options.getInteger("id"),list=db.cases[interaction.guildId]||[],idx=list.findIndex(x=>x.id===id),item=list[idx];
+      if(!item) return safeReply(interaction,{embeds:[errorEmbed("Case not found",`No case **#${id}** exists.`)],flags:MessageFlags.Ephemeral});
+      if(sub==="view") return safeReply(interaction,{embeds:[embed(`📁 Case #${id}`,`**Type:** ${item.type}\\n**Target:** <@!${item.targetId}>\\n**Moderator:** <@!${item.moderatorId}>\\n**Time:** ${fmtDate(item.timestamp)}\\n**Reason:** ${truncate(item.reason,1500)}`,COLORS.info)]});
+      list.splice(idx,1);writeJSON(FILES.cases,db.cases);return safeReply(interaction,{embeds:[success("Case deleted",`Case **#${id}** was deleted.`)]});
+    }
+    if(command==="notes"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand(),user=interaction.options.getUser("user"),guildNotes=db.notes[interaction.guildId]||(db.notes[interaction.guildId]={});
+      if(sub==="add"){if(!guildNotes[user.id])guildNotes[user.id]=[];const id=(guildNotes[user.id].at(-1)?.id||0)+1;guildNotes[user.id].push({id,note:interaction.options.getString("note"),authorId:interaction.user.id,timestamp:Date.now()});writeJSON(FILES.notes,db.notes);return safeReply(interaction,{embeds:[success("Note added",`Added staff note **#${id}** for <@!${user.id}>.`)]});}
+      if(sub==="view"){const arr=guildNotes[user.id]||[];return safeReply(interaction,{embeds:[embed("📝 Staff Notes",arr.length?arr.map(n=>`**#${n.id}** • <@!${n.authorId}> • ${fmtDate(n.timestamp)}\\n${truncate(n.note,500)}`).join("\\n\\n"):"No notes for this member.",COLORS.info)]});}
+      const arr=guildNotes[user.id]||[],id=interaction.options.getInteger("id"),before=arr.length;guildNotes[user.id]=arr.filter(n=>n.id!==id);writeJSON(FILES.notes,db.notes);return safeReply(interaction,{embeds:[success("Note updated",before===guildNotes[user.id].length?`Note #${id} was not found.`:`Note #${id} removed.`)]});
+    }
+    if(command==="lockdown"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const cfg=getGuildData(interaction.guildId),sub=interaction.options.getSubcommand();
+      if(sub==="status") return safeReply(interaction,{embeds:[infoEmbed("🚨 Lockdown Status",cfg.raid.lockdown?"Lockdown is **ACTIVE**.":"Lockdown is **inactive**.")]});
+      const result=sub==="on"?await enableLockdown(interaction.guild,"Manual server lockdown"):await disableLockdown(interaction.guild);
+      return safeReply(interaction,{embeds:[success(sub==="on"?"Lockdown enabled":"Lockdown disabled",`${result.changed} channel(s) updated${result.skipped?` • ${result.skipped} skipped`:""}.`)]});
+    }
+    if(command==="raidmode"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const cfg=getGuildData(interaction.guildId),sub=interaction.options.getSubcommand();
+      if(sub==="status") return safeReply(interaction,{embeds:[embed("🚨 Raid Mode",`Raid protection: **${cfg.raid.enabled?"ON":"OFF"}**\\nLockdown: **${cfg.raid.lockdown?"ON":"OFF"}**\\nJoin limit: **${cfg.raid.joinLimit} / ${cfg.raid.window}ms`,COLORS.danger)]});
+      cfg.raid.enabled=sub==="on";writeJSON(FILES.config,db.config);
+      if(sub==="on"&&!cfg.raid.lockdown) await enableLockdown(interaction.guild,"Raid mode enabled");
+      if(sub==="off"&&cfg.raid.lockdown) await disableLockdown(interaction.guild);
+      return safeReply(interaction,{embeds:[success(`Raid mode ${sub==="on"?"enabled":"disabled"}`,sub==="on"?"Raid protection and lockdown are active.":"Raid protection is disabled and lockdown is restored.")]});
+    }
+    if(command==="activity"){
+      const a=analyticsFor(interaction.guildId);
+      return safeReply(interaction,{embeds:[embed("📊 Server Activity",`**Messages:** ${a.messages.toLocaleString()}\\n**Commands:** ${a.commands.toLocaleString()}\\n**Joins:** ${a.joins.toLocaleString()}\\n**Leaves:** ${a.leaves.toLocaleString()}`,COLORS.info)]});
+    }
+    if(command==="suggest"){
+      const textValue=truncate(interaction.options.getString("suggestion"),1000),guildId=interaction.guildId;
+      if(!db.suggestions[guildId])db.suggestions[guildId]=[];
+      const id=(db.suggestions[guildId].at(-1)?.id||0)+1;
+      db.suggestions[guildId].push({id,userId:interaction.user.id,text:textValue,timestamp:Date.now()});writeJSON(FILES.suggestions,db.suggestions);
+      const cfg=getGuildData(guildId),channel=cfg.logChannelId?interaction.guild.channels.cache.get(cfg.logChannelId):null;
+      if(channel?.isTextBased()) await channel.send({embeds:[embed(`💡 Suggestion #${id}`,textValue,COLORS.cyan).addFields({name:"Submitted by",value:`<@!${interaction.user.id}>`,inline:true})]}).catch(()=>{});
+      return safeReply(interaction,{embeds:[success("Suggestion submitted",`Your suggestion is **#${id}**.`)]});
+    }
+    if(command==="dashboard") return safeReply(interaction,dashboardPayload(interaction.guildId,"overview"));
+    if(command==="ticket"){
+      const sub=interaction.options.getSubcommand();
+      const ticket=db.tickets[interaction.guildId]?.[interaction.channelId];
+      if(["add","remove","rename","transfer","transcript","reopen"].includes(sub)){
+        if(!isStaff(interaction) && ticket?.userId!==interaction.user.id) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","Only the ticket owner or staff can manage this ticket.")],flags:MessageFlags.Ephemeral});
+        if(!ticket) return safeReply(interaction,{embeds:[errorEmbed("Not a ticket","This command must be used inside a Vyne ticket.")],flags:MessageFlags.Ephemeral});
+        if(sub==="add"||sub==="remove"){
+          const user=interaction.options.getUser("user");
+          await interaction.channel.permissionOverwrites.edit(user.id,sub==="add"?{ViewChannel:true,SendMessages:true,ReadMessageHistory:true}:{ViewChannel:null,SendMessages:null,ReadMessageHistory:null});
+          return safeReply(interaction,{embeds:[success(sub==="add"?"Member added":"Member removed",`<@!${user.id}> has been ${sub==="add"?"added to":"removed from"} this ticket.`)]});
+        }
+        if(sub==="rename"){const name=interaction.options.getString("name").toLowerCase().replace(/[^a-z0-9-]/g,"-").replace(/-+/g,"-").slice(0,90);await interaction.channel.setName(name||"ticket");return safeReply(interaction,{embeds:[success("Ticket renamed",`Channel renamed to **#${name||"ticket"}**.`)]});}
+        if(sub==="transfer"){const user=interaction.options.getUser("user"),member=await interaction.guild.members.fetch(user.id).catch(()=>null);if(!member)return safeReply(interaction,{embeds:[errorEmbed("Member not found","That user is not in this server.")],flags:MessageFlags.Ephemeral});ticket.claimedBy=user.id;writeJSON(FILES.tickets,db.tickets);return safeReply(interaction,{embeds:[success("Ticket transferred",`Ticket assigned to <@!${user.id}>.`)]});}
+        if(sub==="transcript"){const transcript=await buildTicketTranscript(interaction.channel);const cfg=getGuildData(interaction.guildId),chId=cfg.tickets.premium.transcriptChannelId||cfg.logChannelId,ch=chId?interaction.guild.channels.cache.get(chId):null;if(!ch?.isTextBased())return safeReply(interaction,{embeds:[errorEmbed("Transcript channel unavailable","Configure a transcript or log channel first.")],flags:MessageFlags.Ephemeral});await ch.send({embeds:[infoEmbed("🎫 Ticket Transcript",`Transcript for <#${interaction.channelId}> created by <@!${interaction.user.id}>.`)],files:[new AttachmentBuilder(Buffer.from(transcript||"No messages.","utf8"),{name:`ticket-${interaction.channelId}.txt`})]});return safeReply(interaction,{embeds:[success("Transcript created",`Sent to ${ch}.`)]});}
+        if(sub==="reopen"){if(ticket.open)return safeReply(interaction,{embeds:[infoEmbed("Ticket already open","This ticket is already open.")]});ticket.open=true;ticket.closedAt=null;ticket.closedBy=null;ticket.closeReason=null;writeJSON(FILES.tickets,db.tickets);return safeReply(interaction,{embeds:[success("Ticket reopened","Ticket state restored.")]});}
+      }
+    }
 
     if(command==="config"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});return safeReply(interaction,configPanel(interaction.guildId));}
     if(command==="logchannel"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const cfg=getGuildData(interaction.guildId);cfg.logChannelId=interaction.options.getChannel("channel").id;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Log channel set",`Logs will be sent to <#${cfg.logChannelId}>.`)]});}
