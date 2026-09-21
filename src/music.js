@@ -49,15 +49,17 @@ function savePersistent() {
 }
 
 function stateFor(guildId) {
-  if (!persistent[guildId]) {
-    persistent[guildId] = {
-      autoplay: false,
-      fairplay: false,
-      always247: false,
-      ownerId: null,
-      voiceChannelId: null,
-      volume: 75
-    };
+  const defaults = {
+    autoplay: false,
+    fairplay: false,
+    always247: false,
+    ownerId: null,
+    voiceChannelId: null,
+    volume: 75
+  };
+  if (!persistent[guildId] || typeof persistent[guildId] !== "object") persistent[guildId] = {};
+  for (const [key, value] of Object.entries(defaults)) {
+    if (persistent[guildId][key] === undefined) persistent[guildId][key] = value;
   }
   return persistent[guildId];
 }
@@ -366,7 +368,8 @@ function payloadEmbed(title, description, color = COLORS.primary) {
 
 function trackLine(track, index = null) {
   const prefix = index === null ? "🎵" : `**${index}.**`;
-  return `${prefix} [${cleanTitle(track.title)}](${track.url}) • \`${track.durationText}\` • <@${track.requesterId}>`;
+  const requester = /^\\d{17,20}$/.test(String(track.requesterId || "")) ? `<@${track.requesterId}>` : "Vyne Autoplay";
+  return `${prefix} [${cleanTitle(track.title)}](${track.url}) • \`${track.durationText}\` • ${requester}`;
 }
 
 function requireVoice(interaction) {
@@ -588,6 +591,12 @@ async function handleMusicCommand(interaction, premiumActive) {
       } else {
         settings.voiceChannelId = null;
         settings.ownerId = null;
+        if (!session.current) {
+          const connection = getVoiceConnection(guildId);
+          if (connection) connection.destroy();
+          session.connection = null;
+          session.voiceChannelId = null;
+        }
       }
     }
     savePersistent();
