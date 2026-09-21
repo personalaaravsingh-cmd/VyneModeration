@@ -2878,6 +2878,22 @@ async function handleInteraction(interaction) {
     trackAnalytics(interaction.guildId,"commands");
     const command=interaction.commandName;
 
+    // Central Premium gate: keep every Premium-only slash command behind the same
+    // live subscription check so a newly added handler cannot accidentally bypass it.
+    const premiumSubcommandRules = {
+      automodpro: () => true,
+      antinukewhitelist: () => true,
+      analytics: () => true,
+      voicemaster: () => true,
+      ticket: () => interaction.options.getSubcommand(false) === "builder",
+      welcome: () => ["advanced", "preview"].includes(interaction.options.getSubcommand(false)),
+      notify: () => ["youtube", "reddit", "remove", "list"].includes(interaction.options.getSubcommand(false))
+    };
+    const premiumRule = premiumSubcommandRules[command];
+    if (premiumRule?.() && !premiumActive(interaction.user.id, interaction.guildId)) {
+      return requirePremium(interaction);
+    }
+
     if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
     if(command==="ask") return handleAICommand(interaction);
 
