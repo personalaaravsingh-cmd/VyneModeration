@@ -29,7 +29,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { handleMusicCommand, restore247, flushMusicData } = require("./music");
+const { handleMusicCommand, restore247, forceFixMusic, flushMusicData } = require("./music");
 
 const {
   DISCORD_TOKEN,
@@ -1440,6 +1440,7 @@ const commands = [
   new SlashCommandBuilder().setName("about").setDescription("Learn about Vyne and open official links."),
   new SlashCommandBuilder().setName("ping").setDescription("Check Vyne's latency."),
   new SlashCommandBuilder().setName("botstats").setDescription("View Vyne bot, process and hosting statistics."),
+  new SlashCommandBuilder().setName("forcefixmusic").setDescription("Reconnect to the music voice channel and resume the current track."),
   new SlashCommandBuilder().setName("music").setDescription("Play YouTube music in voice channels.")
     .addSubcommand(s => s.setName("play").setDescription("Play a YouTube URL or search for a song.")
       .addStringOption(o => o.setName("query").setDescription("YouTube URL or song name").setRequired(true)))
@@ -3646,6 +3647,12 @@ async function handleInteraction(interaction) {
     if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
     if(command==="ask") return handleAICommand(interaction);
     if(command==="music") return handleMusicCommand(interaction, premiumActive);
+    if(command==="forcefixmusic"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions to force-fix the music connection.")],flags:MessageFlags.Ephemeral});
+      await deferOnce(interaction, MessageFlags.Ephemeral);
+      const result=await forceFixMusic(interaction.guild, interaction.user.id);
+      return safeReply(interaction,{embeds:[success("Music force-fixed",`Reconnected to <#${getGuildData(interaction.guildId).voicemaster?.hubChannelId || result?.track?.voiceChannelId || interaction.member?.voice?.channelId || "the saved voice channel"}> and resumed **${result.track.title}** from **${Math.floor(result.elapsed)}s**.`)]});
+    }
 
     if(command==="ai"){
       const sub=interaction.options.getSubcommand(), cfg=getAIConfig(interaction.guildId);
