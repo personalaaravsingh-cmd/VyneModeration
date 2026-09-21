@@ -517,6 +517,10 @@ async function updateNowPlayingCard(guildId, force = false) {
     });
     session.lastCardSecond = elapsed;
   } catch (err) {
+    if (err?.code === 10008 || /unknown message/i.test(String(err?.message || ""))) {
+      stopNowPlayingUpdater(session);
+      return;
+    }
     console.error(`[Music:${guildId}] now-playing card update error:`, err?.message || err);
   }
 }
