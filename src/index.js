@@ -19,6 +19,8 @@ const {
   AuditLogEvent,
   ModalBuilder,
   TextInputBuilder,
+  FileUploadBuilder,
+  LabelBuilder,
   TextInputStyle,
   MessageFlags,
   Collection
@@ -47,6 +49,8 @@ if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
 }
 
 const HOSTING_API = "https://bot-hosting.net/api/v1";
+const SUPPORT_GUILD_ID = process.env.VYNE_SUPPORT_GUILD_ID || "1550534284928880673";
+const SUPPORT_REPORT_CHANNEL_ID = process.env.VYNE_SUPPORT_REPORT_CHANNEL_ID || "1551497887639142440";
 const DATA_DIR = path.join(__dirname, "..", "data");
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -64,6 +68,7 @@ const FILES = {
   noprefix: path.join(DATA_DIR, "noprefix.json"),
   notes: path.join(DATA_DIR, "notes.json"),
   suggestions: path.join(DATA_DIR, "suggestions.json"),
+  botReports: path.join(DATA_DIR, "bot-reports.json"),
   analytics: path.join(DATA_DIR, "analytics.json")
 };
 
@@ -188,6 +193,7 @@ const db = {
   noprefix: readJSON(FILES.noprefix, { users: {}, guilds: {} }),
   notes: readJSON(FILES.notes, {}),
   suggestions: readJSON(FILES.suggestions, {}),
+  botReports: readJSON(FILES.botReports, {}),
   analytics: readJSON(FILES.analytics, {})
 };
 
@@ -484,6 +490,102 @@ async function deferOnce(interaction, flags = undefined) {
 function truncate(text, max = 3900) {
   const value = String(text ?? "");
   return value.length > max ? value.slice(0, max - 3) + "..." : value;
+}
+
+function bugReportModal() {
+  const typeMenu = new StringSelectMenuBuilder()
+    .setCustomId("report_type")
+    .setPlaceholder("Choose the issue type")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      { label: "Error", value: "error", description: "Something is throwing an error or failing.", emoji: "🚨" },
+      { label: "Bug", value: "bug", description: "Something works incorrectly or unexpectedly.", emoji: "🐛" },
+      { label: "Other", value: "other", description: "Other Vyne issue or feedback.", emoji: "💬" }
+    );
+
+  const titleInput = new TextInputBuilder()
+    .setCustomId("report_title")
+    .setPlaceholder("e.g. /help does not open")
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(3)
+    .setMaxLength(100)
+    .setRequired(true);
+
+  const descriptionInput = new TextInputBuilder()
+    .setCustomId("report_description")
+    .setPlaceholder("Tell us exactly what went wrong.")
+    .setStyle(TextInputStyle.Paragraph)
+    .setMinLength(10)
+    .setMaxLength(2000)
+    .setRequired(true);
+
+  const stepsInput = new TextInputBuilder()
+    .setCustomId("report_steps")
+    .setPlaceholder("What did you do before the issue happened? Include the command used, if relevant.")
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(1500)
+    .setRequired(false);
+
+  const screenshotUpload = new FileUploadBuilder()
+    .setCustomId("report_screenshot")
+    .setMinValues(0)
+    .setMaxValues(1)
+    .setFileTypes("image")
+    .setRequired(false);
+
+  return new ModalBuilder()
+    .setCustomId("vyne_bug_report_modal")
+    .setTitle("Report a Vyne Issue")
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel("Issue type")
+        .setDescription("Choose Error, Bug or Other.")
+        .setStringSelectMenuComponent(typeMenu),
+      new LabelBuilder()
+        .setLabel("Short title")
+        .setTextInputComponent(titleInput),
+      new LabelBuilder()
+        .setLabel("What happened?")
+        .setDescription("Give enough detail for us to reproduce the problem.")
+        .setTextInputComponent(descriptionInput),
+      new LabelBuilder()
+        .setLabel("Steps to reproduce")
+        .setDescription("Optional, but very useful for debugging.")
+        .setTextInputComponent(stepsInput),
+      new LabelBuilder()
+        .setLabel("Screenshot")
+        .setDescription("Optional. Upload an image showing the error or bug.")
+        .setFileUploadComponent(screenshotUpload)
+    );
+}
+
+function bugReportButtonRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("vyne_report_new")
+      .setLabel("Report another issue")
+      .setEmoji("📝")
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+async function getSupportReportChannel() {
+  let guild = client.guilds.cache.get(SUPPORT_GUILD_ID);
+  if (!guild) guild = await client.guilds.fetch(SUPPORT_GUILD_ID).catch(() => null);
+  if (!guild) throw new Error("Vyne is not connected to the configured support server.");
+
+  const channel = await guild.channels.fetch(SUPPORT_REPORT_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased()) throw new Error("The configured support report channel is unavailable.");
+  return channel;
+}
+
+function reportTypeLabel(type) {
+  return ({ error: "🚨 Error", bug: "🐛 Bug", other: "💬 Other" }[type] || "💬 Other");
+}
+
+function createBotReportId() {
+  return "VYNE-" + Date.now().toString(36).toUpperCase();
 }
 
 
@@ -1214,6 +1316,8 @@ const commands = [
     .addUserOption(o => o.setName("user").setDescription("Member to report").setRequired(true))
     .addStringOption(o => o.setName("reason").setDescription("Why you are reporting them").setRequired(true))
     .addStringOption(o => o.setName("evidence").setDescription("Optional evidence link or extra context")),
+  new SlashCommandBuilder().setName("reports").setDescription("Report a Vyne bug, error or other issue.")
+    .setDMPermission(false),
 
   new SlashCommandBuilder().setName("remind").setDescription("Create a reminder.")
     .addStringOption(o => o.setName("time").setDescription("e.g. 10m, 2h, 1d").setRequired(true))
@@ -1474,7 +1578,7 @@ function helpPayload(page = "home") {
         { name: "Giveaways", value: "`/giveaway start` `/giveaway end` `/giveaway reroll`", inline: false },
         { name: "Polls", value: "`/poll` — create a reaction-based poll.", inline: false },
         { name: "Notifications", value: "`/notify set` `/notify test` plus YouTube/Reddit feeds • ◆ Premium", inline: false },
-        { name: "Reports", value: "`/report @user reason` — privately sends a member report to the configured staff log channel.", inline: false },
+        { name: "Reports", value: "`/report @user reason` — member reports. `/reports` — report a Vyne error, bug or other issue with optional screenshot.", inline: false },
         { name: "Embeds", value: "`/embed` — create a custom embed with title, description, color, image, thumbnail and footer.", inline: false },
         { name: "Dashboard", value: "`/dashboard` — interactive live server control center.", inline: false },
         { name: "Security", value: "`/security` `/lockdown` `/raidmode` — protection status and emergency controls.", inline: false },
@@ -2645,10 +2749,9 @@ async function handleInteraction(interaction) {
   try {
     // Acknowledge slash commands immediately so Discord never reaches the 3-second timeout
     // while Vyne is doing config/database/API work. Modal-based commands must remain un-deferred.
-    if (interaction.isChatInputCommand() && !interaction.replied && !interaction.deferred) {
-      // ACK every slash command immediately. This is deliberately before any command
-      // routing, analytics, Premium checks or database work so Discord can never show
-      // "The application did not respond" because a handler took too long.
+    if (interaction.isChatInputCommand() && !interaction.replied && !interaction.deferred && interaction.commandName !== "reports") {
+      // ACK every normal slash command immediately. /reports is excluded because it
+      // must open a modal as its initial interaction response.
       console.log(`📨 Interaction received: /${interaction.commandName}`);
       await interaction.deferReply({
         flags: interaction.commandName === "help" ? undefined : MessageFlags.Ephemeral
@@ -2731,6 +2834,7 @@ async function handleInteraction(interaction) {
     }
 
     if (interaction.isButton()) {
+      if (interaction.customId === "vyne_report_new") return interaction.showModal(bugReportModal());
       if (interaction.customId === "vyne_help_back") return interaction.update(helpPayload("home"));
       if (interaction.customId === "botstats_refresh") { await deferOnce(interaction); return interaction.editReply(await botStatsEmbed()); }
       if (interaction.customId === "vyne_automod_refresh") return interaction.update(automodPanel(interaction.guildId));
@@ -2811,6 +2915,89 @@ async function handleInteraction(interaction) {
     }
 
     if (interaction.isModalSubmit()) {
+      if (interaction.customId === "vyne_bug_report_modal") {
+        const key = "bugreport:" + interaction.user.id;
+        const now = Date.now();
+        const last = cooldowns.get(key) || 0;
+        const cooldownMs = 60_000;
+        if (now - last < cooldownMs) {
+          return safeReply(interaction, {
+            embeds: [warningEmbed("Report cooldown", `Please wait **${Math.ceil((cooldownMs - (now - last)) / 1000)}s** before sending another report.`)],
+            flags: MessageFlags.Ephemeral
+          });
+        }
+
+        await deferOnce(interaction, MessageFlags.Ephemeral);
+
+        try {
+          const supportChannel = await getSupportReportChannel();
+          const type = interaction.fields.getStringSelectValues("report_type")?.[0] || "other";
+          const title = truncate(interaction.fields.getTextInputValue("report_title"), 100);
+          const description = truncate(interaction.fields.getTextInputValue("report_description"), 2000);
+          const steps = truncate(interaction.fields.getTextInputValue("report_steps") || "Not provided.", 1500);
+          const screenshot = interaction.fields.getUploadedFiles("report_screenshot")?.first() || null;
+          const reportId = createBotReportId();
+          const sourceGuild = interaction.guild;
+          const sourceGuildText = sourceGuild ? `**${sourceGuild.name}** (\`${sourceGuild.id}\`)` : "Direct message";
+          const screenshotName = screenshot?.name?.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "screenshot.png";
+          const reportEmbed = embed(
+            `🧪 Vyne Report • ${reportId}`,
+            "A new Vyne issue was submitted for review.",
+            type === "error" ? COLORS.danger : type === "bug" ? COLORS.warning : COLORS.info
+          ).addFields(
+            { name: "Type", value: reportTypeLabel(type), inline: true },
+            { name: "Submitted by", value: `<@!${interaction.user.id}>\nID: \`${interaction.user.id}\``, inline: true },
+            { name: "Source server", value: sourceGuildText, inline: true },
+            { name: "Title", value: title, inline: false },
+            { name: "Description", value: description, inline: false },
+            { name: "Steps to reproduce", value: steps, inline: false }
+          );
+
+          if (screenshot) {
+            reportEmbed
+              .addFields({ name: "Screenshot", value: `Attached: **${screenshotName}**`, inline: false })
+              .setImage(`attachment://${screenshotName}`);
+          }
+
+          const messagePayload = {
+            embeds: [reportEmbed],
+            components: [bugReportButtonRow()],
+            allowedMentions: { parse: [] }
+          };
+          if (screenshot) messagePayload.files = [{ attachment: screenshot.url, name: screenshotName }];
+
+          const reportMessage = await supportChannel.send(messagePayload);
+          db.botReports[reportId] = {
+            id: reportId,
+            type,
+            title,
+            description,
+            steps,
+            screenshotUrl: screenshot?.url || null,
+            screenshotName: screenshot?.name || null,
+            userId: interaction.user.id,
+            sourceGuildId: interaction.guildId || null,
+            supportGuildId: SUPPORT_GUILD_ID,
+            supportChannelId: SUPPORT_REPORT_CHANNEL_ID,
+            messageId: reportMessage.id,
+            createdAt: now
+          };
+          writeJSON(FILES.botReports, db.botReports);
+          cooldowns.set(key, now);
+
+          return safeReply(interaction, {
+            embeds: [success("Report submitted", `Your report **${reportId}** was sent to the Vyne support team.`)],
+            flags: MessageFlags.Ephemeral
+          });
+        } catch (err) {
+          console.error("Vyne bug report submission error:", err?.stack || err);
+          return safeReply(interaction, {
+            embeds: [errorEmbed("Report failed", "Vyne could not send your report to the support server. Please try again later.")],
+            flags: MessageFlags.Ephemeral
+          });
+        }
+      }
+
       if (interaction.customId.startsWith("ticket_questions_")) {
         const categoryId=interaction.customId.slice("ticket_questions_".length);
         const questions=getGuildData(interaction.guildId).tickets.premium.questions.slice(0,5);
@@ -3033,6 +3220,8 @@ async function handleInteraction(interaction) {
     }
 
     if(command==="announce"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const ch=interaction.options.getChannel("channel")||interaction.channel;await ch.send({embeds:[embed(`📢 ${interaction.options.getString("title")}`,interaction.options.getString("message"),COLORS.primary)]});return safeReply(interaction,{embeds:[success("Announcement sent",`Posted in ${ch}.`)],flags:MessageFlags.Ephemeral});}
+    if(command==="reports") return interaction.showModal(bugReportModal());
+
     if(command==="report"){
       const key=`report:${interaction.guildId}:${interaction.user.id}`;
       const now=Date.now();
