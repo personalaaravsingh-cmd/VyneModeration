@@ -531,7 +531,6 @@ function bugReportModal() {
     .setCustomId("report_screenshot")
     .setMinValues(0)
     .setMaxValues(1)
-    .setFileTypes("image")
     .setRequired(false);
 
   return new ModalBuilder()
