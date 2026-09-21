@@ -281,7 +281,19 @@ function scheduleIdleDisconnect(client, guildId) {
 async function startCurrent(client, guildId, track, seekSeconds = 0) {
   const session = sessionFor(guildId);
   const settings = stateFor(guildId);
-  const player = getPlayer(client, guildId) || session.player;
+  let player = getPlayer(client, guildId) || session.player;
+
+  // A skip/stop can briefly leave Lavalink without a cached player. 24/7 must
+  // recover the voice connection instead of treating that as a fatal playback error.
+  if (!player && settings.always247 && session.voiceChannelId) {
+    const guild = client.guilds.cache.get(guildId);
+    const channel = guild?.channels.cache.get(session.voiceChannelId);
+    if (channel) {
+      await connectToChannel(client, guild, channel);
+      player = getPlayer(client, guildId) || session.player;
+    }
+  }
+
   if (!player) throw new Error("Vyne is not connected to a voice channel.");
 
   const seek = Math.max(0, Number(seekSeconds) || 0);
@@ -829,9 +841,32 @@ async function handleMusicCommand(interaction, premiumActive) {
 
   if (sub === "skip") {
     if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
+
+    // stopPlaying() only stops audio; it must not disconnect the Lavalink player.
+    // Suppress the matching trackEnd because we advance the bot queue ourselves.
     session.suppressNextEnd = true;
-    await session.player.stopPlaying(false, false);
+    const player = session.player;
+    await player.stopPlaying(false, false).catch(err => {
+      session.suppressNextEnd = false;
+      throw err;
+    });
     await advance(client, guildId, "skipped");
+
+    // 24/7 is a hard stay-connected guarantee. If Lavalink dropped the player
+    // during the transition, immediately recreate the voice connection.
+    if (settings.always247 && session.voiceChannelId) {
+      const livePlayer = getPlayer(client, guildId) || session.player;
+      if (!livePlayer?.connected) {
+        const guild = client.guilds.cache.get(guildId);
+        const channel = guild?.channels.cache.get(session.voiceChannelId);
+        if (guild && channel) {
+          await connectToChannel(client, guild, channel).catch(err => {
+            console.error(`[Music:${guildId}] 24/7 skip reconnect failed:`, err?.message || err);
+          });
+        }
+      }
+    }
+
     return payloadEmbed("⏭️ Skipped", session.current ? `Now playing **${session.current.title}**.` : "The queue is empty.");
   }
 
