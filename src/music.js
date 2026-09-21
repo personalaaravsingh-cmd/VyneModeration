@@ -14,6 +14,8 @@ const COLORS = {
 };
 
 const sessions = new Map();
+const artworkCache = new Map();
+const ARTWORK_CACHE_LIMIT = 50;
 let persistent = loadPersistent();
 let clientUserIdFallback = "vyne";
 let lavalinkEventsAttached = false;
@@ -72,6 +74,7 @@ function sessionFor(guildId) {
     idleTimer: null,
     nowPlayingMessage: null,
     cardTimer: null,
+    cardUpdating: false,
     lastCardSecond: null,
     client: null,
     suppressNextEnd: false
@@ -90,7 +93,8 @@ function isYouTubeUrl(input) {
 }
 
 function durationSeconds(raw) {
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  // Lavalink v4 reports TrackInfo.length/duration in milliseconds.
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.max(0, raw / 1000);
   if (!raw || typeof raw !== "string") return 0;
   const parts = raw.split(":").map(Number);
   if (parts.some(Number.isNaN)) return 0;
@@ -152,7 +156,9 @@ async function resolveTrack(query, requester, player) {
       duration,
       durationText: formatDuration(duration),
       thumbnail: info.artworkUrl || info.thumbnail || null,
+      artworkUrl: info.artworkUrl || info.thumbnail || null,
       artist: cleanTitle(info.author || info.artist || "Unknown artist"),
+      album: cleanTitle(lavaTrack.pluginInfo?.albumName || ""),
       channel: cleanTitle(info.author || "YouTube"),
       uploader: cleanTitle(info.author || "YouTube"),
       requesterId: requester.id,
@@ -285,7 +291,9 @@ async function autoplayTrack(client, guildId) {
       duration,
       durationText: formatDuration(duration),
       thumbnail: info.artworkUrl || info.thumbnail || null,
+      artworkUrl: info.artworkUrl || info.thumbnail || null,
       artist: cleanTitle(info.author || "Unknown artist"),
+      album: cleanTitle(candidate.pluginInfo?.albumName || ""),
       channel: cleanTitle(info.author || "YouTube"),
       uploader: cleanTitle(info.author || "YouTube"),
       requesterId: "autoplay",
@@ -319,22 +327,32 @@ async function advance(client, guildId, reason = "finished") {
     let next = selectNext(session, settings);
 
     if (!next && settings.autoplay) {
-      try { next = await autoplayTrack(client, guildId); } catch (err) {
+      try {
+        next = await autoplayTrack(client, guildId);
+      } catch (err) {
         console.error(`[Music:${guildId}] autoplay error:`, err?.message || err);
       }
     }
 
-    if (!next) {
-      scheduleIdleDisconnect(client, guildId);
-      return;
+    while (next) {
+      try {
+        await startCurrent(client, guildId, next);
+        return;
+      } catch (err) {
+        console.error(`[Music:${guildId}] stream error:`, err?.message || err);
+        session.current = null;
+        next = selectNext(session, settings);
+        if (!next && settings.autoplay) {
+          try {
+            next = await autoplayTrack(client, guildId);
+          } catch (autoplayErr) {
+            console.error(`[Music:${guildId}] autoplay error:`, autoplayErr?.message || autoplayErr);
+          }
+        }
+      }
     }
 
-    try {
-      await startCurrent(client, guildId, next);
-    } catch (err) {
-      console.error(`[Music:${guildId}] stream error:`, err?.message || err);
-      await advance(client, guildId, "error");
-    }
+    scheduleIdleDisconnect(client, guildId);
   } finally {
     session.advancing = false;
   }
@@ -409,96 +427,141 @@ function fitText(ctx, text, maxWidth) {
   return value + "…";
 }
 
+function artworkFallbackUrl(track) {
+  if (!track) return null;
+  if (track.artworkUrl) return track.artworkUrl;
+  const source = String(track.lavaTrack?.info?.sourceName || "").toLowerCase();
+  const identifier = String(track.lavaTrack?.info?.identifier || track.id || "");
+  if (source === "youtube" && /^[A-Za-z0-9_-]{11}$/.test(identifier)) {
+    return `https://i.ytimg.com/vi/${identifier}/hqdefault.jpg`;
+  }
+  return null;
+}
+
+async function getArtworkImage(track) {
+  const url = artworkFallbackUrl(track);
+  if (!url) return null;
+  if (artworkCache.has(url)) return artworkCache.get(url);
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const image = await loadImage(buffer);
+    artworkCache.set(url, image);
+    while (artworkCache.size > ARTWORK_CACHE_LIMIT) {
+      const firstKey = artworkCache.keys().next().value;
+      artworkCache.delete(firstKey);
+    }
+    return image;
+  } catch {
+    return null;
+  }
+}
+
 async function renderNowPlayingCard(track, elapsed = 0, volume = 75, loop = "off") {
   const width = 1200;
-  const height = 520;
+  const height = 600;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
-  const bg = ctx.createLinearGradient(0, 0, width, height);
-  bg.addColorStop(0, "#11111a");
-  bg.addColorStop(0.55, "#17172a");
-  bg.addColorStop(1, "#09090f");
-  ctx.fillStyle = bg;
+  // Clean, compact music-player layout.
+  ctx.fillStyle = "#0b0b10";
   ctx.fillRect(0, 0, width, height);
 
-  // Subtle accent glow.
-  const glow = ctx.createRadialGradient(1040, 70, 10, 1040, 70, 360);
-  glow.addColorStop(0, "rgba(124,92,255,0.34)");
-  glow.addColorStop(1, "rgba(124,92,255,0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(650, 0, 550, 360);
+  const thumbnail = await getArtworkImage(track);
 
-  let thumbnail = null;
-  if (track?.thumbnail) {
-    try { thumbnail = await loadImage(track.thumbnail); } catch {}
+  // Artwork-driven background, kept deliberately subtle.
+  if (thumbnail) {
+    ctx.save();
+    ctx.globalAlpha = 0.14;
+    ctx.filter = "blur(32px)";
+    ctx.drawImage(thumbnail, -80, -80, width + 160, height + 160);
+    ctx.restore();
+    ctx.fillStyle = "rgba(11,11,16,0.82)";
+    ctx.fillRect(0, 0, width, height);
   }
 
-  const imageX = 45;
-  const imageY = 45;
-  const imageSize = 330;
+  const imageX = 54;
+  const imageY = 54;
+  const imageSize = 360;
+
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(imageX, imageY, imageSize, imageSize, 24);
+  ctx.roundRect(imageX, imageY, imageSize, imageSize, 28);
   ctx.clip();
   if (thumbnail) {
     ctx.drawImage(thumbnail, imageX, imageY, imageSize, imageSize);
   } else {
-    ctx.fillStyle = "#252535";
+    ctx.fillStyle = "#1b1b24";
     ctx.fillRect(imageX, imageY, imageSize, imageSize);
     ctx.fillStyle = "#ffffff";
-    ctx.font = "700 72px sans-serif";
+    ctx.font = "700 100px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("♪", imageX + imageSize / 2, imageY + 205);
+    ctx.fillText("♪", imageX + imageSize / 2, imageY + 225);
   }
   ctx.restore();
 
-  const x = 420;
+  const x = 460;
+  const right = 1138;
   ctx.textAlign = "left";
-  ctx.fillStyle = "#7c5cff";
-  ctx.font = "700 24px sans-serif";
-  ctx.fillText("VYNE  •  NOW PLAYING", x, 78);
+
+  ctx.fillStyle = "#a7a7b4";
+  ctx.font = "700 20px sans-serif";
+  ctx.fillText("NOW PLAYING", x, 86);
 
   ctx.fillStyle = "#ffffff";
-  ctx.font = "700 38px sans-serif";
-  ctx.fillText(fitText(ctx, track?.title || "Unknown track", 720), x, 132);
+  ctx.font = "700 42px sans-serif";
+  ctx.fillText(fitText(ctx, track?.title || "Unknown track", right - x), x, 148);
 
-  ctx.fillStyle = "#b8b8c8";
-  ctx.font = "500 24px sans-serif";
-  ctx.fillText(fitText(ctx, `Artist • ${track?.artist || track?.channel || "Unknown artist"}`, 720), x, 174);
+  ctx.fillStyle = "#d0d0da";
+  ctx.font = "500 25px sans-serif";
+  ctx.fillText(fitText(ctx, track?.artist || track?.channel || "Unknown artist", right - x), x, 190);
 
-  ctx.fillStyle = "#88889a";
-  ctx.font = "500 20px sans-serif";
-  ctx.fillText(fitText(ctx, `YouTube • ${track?.uploader || track?.channel || "Unknown channel"}`, 720), x, 210);
+  const meta = [track?.album, track?.source || "YouTube"].filter(Boolean).join("  •  ");
+  ctx.fillStyle = "#858591";
+  ctx.font = "500 19px sans-serif";
+  ctx.fillText(fitText(ctx, meta || "Vyne Music", right - x), x, 225);
 
   const total = Math.max(1, Number(track?.duration) || 1);
   const progress = Math.max(0, Math.min(1, elapsed / total));
   const barX = x;
-  const barY = 290;
-  const barW = 720;
-  const barH = 12;
-  ctx.fillStyle = "#303041";
-  ctx.roundRect(barX, barY, barW, barH, 6);
-  ctx.fill();
-  ctx.fillStyle = "#7c5cff";
-  ctx.roundRect(barX, barY, Math.max(8, barW * progress), barH, 6);
+  const barY = 300;
+  const barW = right - x;
+  const barH = 10;
+
+  ctx.fillStyle = "#292932";
+  ctx.roundRect(barX, barY, barW, barH, 5);
   ctx.fill();
 
-  ctx.fillStyle = "#e7e7ef";
-  ctx.font = "600 19px sans-serif";
-  ctx.fillText(formatDuration(elapsed), barX, 330);
+  ctx.fillStyle = "#ffffff";
+  ctx.roundRect(barX, barY, Math.max(6, barW * progress), barH, 5);
+  ctx.fill();
+
+  ctx.fillStyle = "#eeeeF2";
+  ctx.font = "600 18px sans-serif";
+  ctx.fillText(formatDuration(elapsed), barX, 338);
+
   ctx.textAlign = "right";
-  ctx.fillStyle = "#9d9daf";
-  ctx.fillText(formatDuration(total), barX + barW, 330);
+  ctx.fillStyle = "#898994";
+  ctx.fillText(formatDuration(total), right, 338);
 
   ctx.textAlign = "left";
-  ctx.fillStyle = "#8f8fa2";
-  ctx.font = "500 18px sans-serif";
-  ctx.fillText(`Volume ${volume}%  •  Loop ${loop}  •  Requested by ${track?.requesterTag || "Vyne"}`, x, 382);
+  ctx.fillStyle = "#7f7f8c";
+  ctx.font = "500 17px sans-serif";
+  ctx.fillText(`Requested by ${track?.requesterTag || "Vyne"}`, x, 400);
 
-  ctx.fillStyle = "#5d5d70";
-  ctx.font = "500 16px sans-serif";
-  ctx.fillText("Vyne Music  •  YouTube", x, 430);
+  ctx.textAlign = "right";
+  ctx.fillText(`Volume ${volume}%  •  Loop ${loop === "off" ? "Off" : loop}`, right, 400);
+
+  // Small, unobtrusive branding.
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#5e5e68";
+  ctx.font = "600 16px sans-serif";
+  ctx.fillText("VYNE MUSIC", x, 535);
 
   return canvas.toBuffer("image/png");
 }
@@ -509,6 +572,8 @@ async function updateNowPlayingCard(guildId, force = false) {
   if (!message || !session.current) return;
   const elapsed = currentElapsed(session.current);
   if (!force && session.lastCardSecond !== null && Math.abs(elapsed - session.lastCardSecond) < 5) return;
+  if (session.cardUpdating) return;
+  session.cardUpdating = true;
   try {
     const buffer = await renderNowPlayingCard(session.current, elapsed, session.volume, session.loop);
     await message.edit({
@@ -522,6 +587,8 @@ async function updateNowPlayingCard(guildId, force = false) {
       return;
     }
     console.error(`[Music:${guildId}] now-playing card update error:`, err?.message || err);
+  } finally {
+    session.cardUpdating = false;
   }
 }
 
