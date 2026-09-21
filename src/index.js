@@ -1349,9 +1349,9 @@ function dashboardPayload(guildId, page = "overview") {
       desc: "A live overview of Vyne's server systems.",
       color: COLORS.primary,
       fields: [
-        { name: "🛡️ Security", value: `AutoMod: **${cfg.automod.enabled ? "ON" : "OFF"}**\\nAnti-Nuke: **${cfg.antinuke.enabled ? "ON" : "OFF"}**\\nRaid Mode: **${cfg.raid.enabled ? "ON" : "OFF"}**\\nLockdown: **${cfg.raid.lockdown ? "ON" : "OFF"}`, inline: true },
-        { name: "🎫 Tickets", value: `**${cfg.tickets.enabled ? "Enabled" : "Disabled"}**\\nOpen: **${Object.values(db.tickets[guildId] || {}).filter(t => t.open).length}**`, inline: true },
-        { name: "📊 Activity", value: `Messages: **${a.messages.toLocaleString()}**\\nCommands: **${a.commands.toLocaleString()}**\\nJoins: **${a.joins.toLocaleString()}**\\nLeaves: **${a.leaves.toLocaleString()}**`, inline: true }
+        { name: "🛡️ Security", value: `AutoMod: **${cfg.automod.enabled ? "ON" : "OFF"}**\nAnti-Nuke: **${cfg.antinuke.enabled ? "ON" : "OFF"}**\nRaid Mode: **${cfg.raid.enabled ? "ON" : "OFF"}**\nLockdown: **${cfg.raid.lockdown ? "ON" : "OFF"}`, inline: true },
+        { name: "🎫 Tickets", value: `**${cfg.tickets.enabled ? "Enabled" : "Disabled"}**\nOpen: **${Object.values(db.tickets[guildId] || {}).filter(t => t.open).length}**`, inline: true },
+        { name: "📊 Activity", value: `Messages: **${a.messages.toLocaleString()}**\nCommands: **${a.commands.toLocaleString()}**\nJoins: **${a.joins.toLocaleString()}**\nLeaves: **${a.leaves.toLocaleString()}**`, inline: true }
       ]
     },
     security: { title: "🛡️ Security", desc: "Current protection state.", color: COLORS.danger, fields: [
@@ -1372,7 +1372,7 @@ function dashboardPayload(guildId, page = "overview") {
       { name: "Leaves", value: a.leaves.toLocaleString(), inline: true }
     ]},
     configuration: { title: "⚙️ Configuration", desc: "Quick configuration links.", color: COLORS.dark, fields: [
-      { name: "Configured", value: `Logs: ${cfg.logChannelId ? `<#${cfg.logChannelId}>` : "Not set"}\\nMod Role: ${cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "Not set"}`, inline: false }
+      { name: "Configured", value: `Logs: ${cfg.logChannelId ? `<#${cfg.logChannelId}>` : "Not set"}\nMod Role: ${cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "Not set"}`, inline: false }
     ]}
   };
   const p = pages[page] || pages.overview;
@@ -3112,21 +3112,21 @@ async function handleInteraction(interaction) {
     if(command==="history"){
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
       const user=interaction.options.getUser("user"), cases=(db.cases[interaction.guildId]||[]).filter(x=>x.targetId===user.id).slice(-15).reverse(), warnings=db.warnings[interaction.guildId]?.[user.id]||[];
-      const value=cases.length?cases.map(x=>`**#${x.id}** • ${x.type} • <@!${x.moderatorId}> • ${fmtDate(x.timestamp)}\\n${truncate(x.reason,180)}`).join("\\n\\n"):"No moderation cases found.";
-      return safeReply(interaction,{embeds:[embed("📜 Moderation History",`<@!${user.id}>\\n\\n${value}`,COLORS.info).addFields({name:"Warnings",value:String(warnings.length),inline:true},{name:"Cases",value:String(cases.length),inline:true})]});
+      const value=cases.length?cases.map(x=>`**#${x.id}** • ${x.type} • <@!${x.moderatorId}> • ${fmtDate(x.timestamp)}\n${truncate(x.reason,180)}`).join("\n\n"):"No moderation cases found.";
+      return safeReply(interaction,{embeds:[embed("📜 Moderation History",`<@!${user.id}>\n\n${value}`,COLORS.info).addFields({name:"Warnings",value:String(warnings.length),inline:true},{name:"Cases",value:String(cases.length),inline:true})]});
     }
     if(command==="case"){
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
       const sub=interaction.options.getSubcommand(),id=interaction.options.getInteger("id"),list=db.cases[interaction.guildId]||[],idx=list.findIndex(x=>x.id===id),item=list[idx];
       if(!item) return safeReply(interaction,{embeds:[errorEmbed("Case not found",`No case **#${id}** exists.`)],flags:MessageFlags.Ephemeral});
-      if(sub==="view") return safeReply(interaction,{embeds:[embed(`📁 Case #${id}`,`**Type:** ${item.type}\\n**Target:** <@!${item.targetId}>\\n**Moderator:** <@!${item.moderatorId}>\\n**Time:** ${fmtDate(item.timestamp)}\\n**Reason:** ${truncate(item.reason,1500)}`,COLORS.info)]});
+      if(sub==="view") return safeReply(interaction,{embeds:[embed(`📁 Case #${id}`,`**Type:** ${item.type}\n**Target:** <@!${item.targetId}>\n**Moderator:** <@!${item.moderatorId}>\n**Time:** ${fmtDate(item.timestamp)}\n**Reason:** ${truncate(item.reason,1500)}`,COLORS.info)]});
       list.splice(idx,1);writeJSON(FILES.cases,db.cases);return safeReply(interaction,{embeds:[success("Case deleted",`Case **#${id}** was deleted.`)]});
     }
     if(command==="notes"){
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
       const sub=interaction.options.getSubcommand(),user=interaction.options.getUser("user"),guildNotes=db.notes[interaction.guildId]||(db.notes[interaction.guildId]={});
       if(sub==="add"){if(!guildNotes[user.id])guildNotes[user.id]=[];const id=(guildNotes[user.id].at(-1)?.id||0)+1;guildNotes[user.id].push({id,note:interaction.options.getString("note"),authorId:interaction.user.id,timestamp:Date.now()});writeJSON(FILES.notes,db.notes);return safeReply(interaction,{embeds:[success("Note added",`Added staff note **#${id}** for <@!${user.id}>.`)]});}
-      if(sub==="view"){const arr=guildNotes[user.id]||[];return safeReply(interaction,{embeds:[embed("📝 Staff Notes",arr.length?arr.map(n=>`**#${n.id}** • <@!${n.authorId}> • ${fmtDate(n.timestamp)}\\n${truncate(n.note,500)}`).join("\\n\\n"):"No notes for this member.",COLORS.info)]});}
+      if(sub==="view"){const arr=guildNotes[user.id]||[];return safeReply(interaction,{embeds:[embed("📝 Staff Notes",arr.length?arr.map(n=>`**#${n.id}** • <@!${n.authorId}> • ${fmtDate(n.timestamp)}\n${truncate(n.note,500)}`).join("\n\n"):"No notes for this member.",COLORS.info)]});}
       const arr=guildNotes[user.id]||[],id=interaction.options.getInteger("id"),before=arr.length;guildNotes[user.id]=arr.filter(n=>n.id!==id);writeJSON(FILES.notes,db.notes);return safeReply(interaction,{embeds:[success("Note updated",before===guildNotes[user.id].length?`Note #${id} was not found.`:`Note #${id} removed.`)]});
     }
     if(command==="lockdown"){
@@ -3139,7 +3139,7 @@ async function handleInteraction(interaction) {
     if(command==="raidmode"){
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
       const cfg=getGuildData(interaction.guildId),sub=interaction.options.getSubcommand();
-      if(sub==="status") return safeReply(interaction,{embeds:[embed("🚨 Raid Mode",`Raid protection: **${cfg.raid.enabled?"ON":"OFF"}**\\nLockdown: **${cfg.raid.lockdown?"ON":"OFF"}**\\nJoin limit: **${cfg.raid.joinLimit} / ${cfg.raid.window}ms`,COLORS.danger)]});
+      if(sub==="status") return safeReply(interaction,{embeds:[embed("🚨 Raid Mode",`Raid protection: **${cfg.raid.enabled?"ON":"OFF"}**\nLockdown: **${cfg.raid.lockdown?"ON":"OFF"}**\nJoin limit: **${cfg.raid.joinLimit} / ${cfg.raid.window}ms`,COLORS.danger)]});
       cfg.raid.enabled=sub==="on";writeJSON(FILES.config,db.config);
       if(sub==="on"&&!cfg.raid.lockdown) await enableLockdown(interaction.guild,"Raid mode enabled");
       if(sub==="off"&&cfg.raid.lockdown) await disableLockdown(interaction.guild);
@@ -3147,7 +3147,7 @@ async function handleInteraction(interaction) {
     }
     if(command==="activity"){
       const a=analyticsFor(interaction.guildId);
-      return safeReply(interaction,{embeds:[embed("📊 Server Activity",`**Messages:** ${a.messages.toLocaleString()}\\n**Commands:** ${a.commands.toLocaleString()}\\n**Joins:** ${a.joins.toLocaleString()}\\n**Leaves:** ${a.leaves.toLocaleString()}`,COLORS.info)]});
+      return safeReply(interaction,{embeds:[embed("📊 Server Activity",`**Messages:** ${a.messages.toLocaleString()}\n**Commands:** ${a.commands.toLocaleString()}\n**Joins:** ${a.joins.toLocaleString()}\n**Leaves:** ${a.leaves.toLocaleString()}`,COLORS.info)]});
     }
     if(command==="suggest"){
       const textValue=truncate(interaction.options.getString("suggestion"),1000),guildId=interaction.guildId;
