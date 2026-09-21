@@ -1184,6 +1184,14 @@ const commands = [
     .addStringOption(o => o.setName("option4").setDescription("Option 4"))
     .addStringOption(o => o.setName("option5").setDescription("Option 5")),
 
+  new SlashCommandBuilder().setName("embed").setDescription("Create and send a custom embed.")
+    .addStringOption(o => o.setName("title").setDescription("Embed title").setRequired(true))
+    .addStringOption(o => o.setName("description").setDescription("Embed description").setRequired(true))
+    .addStringOption(o => o.setName("color").setDescription("Hex color, e.g. #5865F2"))
+    .addStringOption(o => o.setName("footer").setDescription("Optional footer text"))
+    .addStringOption(o => o.setName("image").setDescription("Optional image URL"))
+    .addStringOption(o => o.setName("thumbnail").setDescription("Optional thumbnail URL"))
+    .addChannelOption(o => o.setName("channel").setDescription("Destination channel")),
   new SlashCommandBuilder().setName("announce").setDescription("Send a formatted announcement.")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("message").setDescription("Message").setRequired(true))
@@ -1381,6 +1389,7 @@ function helpPayload(page = "home") {
         { name: "Polls", value: "`/poll` — create a reaction-based poll.", inline: false },
         { name: "Notifications", value: "`/notify set` `/notify test` plus YouTube/Reddit feeds • ◆ Premium", inline: false },
         { name: "Reports", value: "`/report @user reason` — privately sends a member report to the configured staff log channel.", inline: false },
+        { name: "Embeds", value: "`/embed` — create a custom embed with title, description, color, image, thumbnail and footer.", inline: false },
         { name: "Reminders", value: "`/remind 10m message` — create a personal server reminder.", inline: false }
       ]
     },
@@ -2878,6 +2887,29 @@ async function handleInteraction(interaction) {
       const q=interaction.options.getString("question"),opts=[1,2,3,4,5].map(i=>interaction.options.getString(`option${i}`)).filter(Boolean),nums=["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"];
       const msg=await interaction.channel.send({embeds:[embed("📊 Poll",`**${q}**\n\n${opts.map((o,i)=>`${nums[i]} ${o}`).join("\n")}`,COLORS.primary)]});for(let i=0;i<opts.length;i++)await msg.react(nums[i]).catch(()=>{});
       return safeReply(interaction,{embeds:[success("Poll created",`Poll message: ${msg}`)],flags:MessageFlags.Ephemeral});
+    }
+
+    if(command==="embed"){
+      if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const title=truncate(interaction.options.getString("title"),256);
+      const description=truncate(interaction.options.getString("description"),4000);
+      const colorInput=(interaction.options.getString("color")||"").trim();
+      const footer=truncate(interaction.options.getString("footer")||"",2048);
+      const image=interaction.options.getString("image");
+      const thumbnail=interaction.options.getString("thumbnail");
+      const channel=interaction.options.getChannel("channel")||interaction.channel;
+      if(!channel?.isTextBased()) return safeReply(interaction,{embeds:[errorEmbed("Invalid channel","Choose a text-based channel.")],flags:MessageFlags.Ephemeral});
+      let color=COLORS.primary;
+      if(colorInput){
+        if(!/^#?[0-9a-fA-F]{6}$/.test(colorInput)) return safeReply(interaction,{embeds:[errorEmbed("Invalid color","Use a 6-digit hex color such as `#5865F2`.")],flags:MessageFlags.Ephemeral});
+        color=parseInt(colorInput.replace("#",""),16);
+      }
+      const custom=embed(title,description,color);
+      if(footer) custom.setFooter({text:footer});
+      if(image){try{custom.setImage(new URL(image).toString());}catch{return safeReply(interaction,{embeds:[errorEmbed("Invalid image URL","Provide a valid image URL.")],flags:MessageFlags.Ephemeral});}}
+      if(thumbnail){try{custom.setThumbnail(new URL(thumbnail).toString());}catch{return safeReply(interaction,{embeds:[errorEmbed("Invalid thumbnail URL","Provide a valid thumbnail URL.")],flags:MessageFlags.Ephemeral});}}
+      await channel.send({embeds:[custom]});
+      return safeReply(interaction,{embeds:[success("Embed sent","Posted the embed in "+channel+".")],flags:MessageFlags.Ephemeral});
     }
 
     if(command==="announce"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const ch=interaction.options.getChannel("channel")||interaction.channel;await ch.send({embeds:[embed(`📢 ${interaction.options.getString("title")}`,interaction.options.getString("message"),COLORS.primary)]});return safeReply(interaction,{embeds:[success("Announcement sent",`Posted in ${ch}.`)],flags:MessageFlags.Ephemeral});}
