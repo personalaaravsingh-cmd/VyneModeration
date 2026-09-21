@@ -1,8 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { YtDlp } = require("ytdlp-nodejs");
+const { YtDlp, helpers: ytdlpHelpers } = require("ytdlp-nodejs");
 const ffmpegPath = require("ffmpeg-static");
-const ytdlp = new YtDlp({ ffmpegPath });
+let ytdlp = new YtDlp({ ffmpegPath });
 const { createCanvas, loadImage } = require("@napi-rs/canvas");
 const {
   joinVoiceChannel,
@@ -199,8 +199,21 @@ function ytDlpError(err, fallback = "YouTube could not be read.") {
   return useful || fallback;
 }
 
+async function ensureYtDlp() {
+  if (ytdlp?.binaryPath && fs.existsSync(ytdlp.binaryPath)) return ytdlp;
+
+  try {
+    const binaryPath = await ytdlpHelpers.downloadYtDlp();
+    ytdlp = new YtDlp({ binaryPath, ffmpegPath });
+    return ytdlp;
+  } catch (err) {
+    throw new Error(ytDlpError(err, "Vyne could not install its yt-dlp binary on this host."));
+  }
+}
+
 async function ytInfo(url, extra = {}) {
-  return ytdlp.getInfoAsync(url, ytDlpOptions(extra));
+  const engine = await ensureYtDlp();
+  return engine.getInfoAsync(url, ytDlpOptions(extra));
 }
 
 async function ytSearch(query, limit = 8) {
@@ -350,7 +363,8 @@ async function startCurrent(guildId, track, seekSeconds = 0) {
     ...(seek > 0 ? { downloadSections: `*${seek}-` } : {})
   });
 
-  const media = ytdlp.stream(track.url, streamOptions);
+  const engine = await ensureYtDlp();
+  const media = engine.stream(track.url, streamOptions);
 
   media.on("stderr", chunk => {
     const message = String(chunk || "").trim();
