@@ -2508,6 +2508,19 @@ client.on("guildAuditLogEntryCreate", async (entry, guild) => {
 
 async function handleInteraction(interaction) {
   try {
+    // Acknowledge slash commands immediately so Discord never reaches the 3-second timeout
+    // while Vyne is doing config/database/API work. Modal-based commands must remain un-deferred.
+    if (interaction.isChatInputCommand()) {
+      const isWelcomeAdvanced =
+        interaction.commandName === "welcome" &&
+        interaction.options.getSubcommand(false) === "advanced";
+
+      if (!isWelcomeAdvanced && !interaction.replied && !interaction.deferred) {
+        console.log(`📨 Interaction received: /${interaction.commandName}`);
+        await interaction.deferReply();
+      }
+    }
+
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "vyne_help") return interaction.update(helpPayload(interaction.values[0]));
       if (interaction.customId === "vyne_automod") {
@@ -2914,8 +2927,8 @@ async function handleInteraction(interaction) {
     if(command==="sys"){
       if(!ownerOnly(interaction))return safeReply(interaction,{embeds:[ownerGuardEmbed()],flags:MessageFlags.Ephemeral});
       const sub=interaction.options.getSubcommand();
-      if(sub==="restart"){await interaction.reply({embeds:[infoEmbed("🔄 Restarting Vyne","The restart request has been sent to Bot-Hosting. **Vyne will come back online shortly.**")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/power`,{method:"POST",body:JSON.stringify({action:"restart",waitSeconds:20})});}catch(err){console.error("/sys restart error:",err?.message||err);}return;}
-      if(sub==="pull"){await interaction.reply({embeds:[infoEmbed("📥 Updating Vyne","The latest GitHub code is being pulled. Vyne will restart when the update is complete.")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/sync`,{method:"POST",body:JSON.stringify({})});}catch(err){console.error("/sys pull error:",err?.message||err);}return;}
+      if(sub==="restart"){await safeReply(interaction,{embeds:[infoEmbed("🔄 Restarting Vyne","The restart request has been sent to Bot-Hosting. **Vyne will come back online shortly.**")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/power`,{method:"POST",body:JSON.stringify({action:"restart",waitSeconds:20})});}catch(err){console.error("/sys restart error:",err?.message||err);}return;}
+      if(sub==="pull"){await safeReply(interaction,{embeds:[infoEmbed("📥 Updating Vyne","The latest GitHub code is being pulled. Vyne will restart when the update is complete.")],flags:MessageFlags.Ephemeral});try{const d=await getHostingDeployment();await hostingRequest(`/deployments/${d.id}/sync`,{method:"POST",body:JSON.stringify({})});}catch(err){console.error("/sys pull error:",err?.message||err);}return;}
       await deferOnce(interaction,MessageFlags.Ephemeral);
       try{
         if(sub==="status")return interaction.editReply({embeds:[await hostingStatusEmbed()]});
