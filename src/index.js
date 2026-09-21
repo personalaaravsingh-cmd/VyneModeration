@@ -3651,7 +3651,7 @@ async function handleInteraction(interaction) {
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions to force-fix the music connection.")],flags:MessageFlags.Ephemeral});
       await deferOnce(interaction, MessageFlags.Ephemeral);
       const result=await forceFixMusic(interaction.guild, interaction.user.id);
-      return safeReply(interaction,{embeds:[success("Music force-fixed",`Reconnected to <#${getGuildData(interaction.guildId).voicemaster?.hubChannelId || result?.track?.voiceChannelId || interaction.member?.voice?.channelId || "the saved voice channel"}> and resumed **${result.track.title}** from **${Math.floor(result.elapsed)}s**.`)]});
+      return safeReply(interaction,{embeds:[success("Music force-fixed",`Reconnected to <#${result.channelId}> and resumed **${result.track.title}** from **${Math.floor(result.elapsed)}s**.`)]});
     }
 
     if(command==="ai"){
