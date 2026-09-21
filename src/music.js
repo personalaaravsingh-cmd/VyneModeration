@@ -378,7 +378,7 @@ function payloadEmbed(title, description, color = COLORS.primary) {
 
 function trackLine(track, index = null) {
   const prefix = index === null ? "🎵" : `**${index}.**`;
-  const requester = /^\\d{17,20}$/.test(String(track.requesterId || "")) ? `<@${track.requesterId}>` : "Vyne Autoplay";
+  const requester = /^\d{17,20}$/.test(String(track.requesterId || "")) ? `<@${track.requesterId}>` : "Vyne Autoplay";
   return `${prefix} [${cleanTitle(track.title)}](${track.url}) • \`${track.durationText}\` • ${requester}`;
 }
 
@@ -623,16 +623,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     }
 
     await startCurrent(guildId, track);
-    return interaction.editReply({
-      embeds: [{
-        title: "▶️ Now playing",
-        description: trackLine(track),
-        color: COLORS.success,
-        thumbnail: track.thumbnail ? { url: track.thumbnail } : undefined,
-        timestamp: new Date().toISOString(),
-        footer: { text: `Vyne • Requested by ${interaction.user.tag}` }
-      }]
-    });
+    return sendNowPlayingCard(interaction, guildId);
   }
 
   if (sub === "pause") {
