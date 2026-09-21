@@ -297,12 +297,10 @@ async function startCurrent(client, guildId, track, seekSeconds = 0) {
   if (!player) throw new Error("Vyne is not connected to a voice channel.");
 
   const seek = Math.max(0, Number(seekSeconds) || 0);
-  await player.play({
-    clientTrack: track.lavaTrack,
-    volume: session.volume,
-    position: Math.floor(seek * 1000)
-  });
-
+  // Set the session's current track before asking Lavalink to play it.
+  // Lavalink can emit trackStart/trackEnd immediately; setting this first
+  // prevents the natural track-end event from seeing a stale/null current
+  // track and failing to advance the custom Vyne queue.
   session.player = player;
   session.client = client;
   session.current = { ...track, guildId, startedAt: Date.now(), seek };
@@ -310,6 +308,17 @@ async function startCurrent(client, guildId, track, seekSeconds = 0) {
   session.history.push(track.id);
   session.history = session.history.slice(-25);
   cancelIdleDisconnect(session);
+
+  try {
+    await player.play({
+      clientTrack: track.lavaTrack,
+      volume: session.volume,
+      position: Math.floor(seek * 1000)
+    });
+  } catch (err) {
+    session.current = null;
+    throw err;
+  }
 
   await setMusicVoiceStatus(client, guildId);
   if (session.nowPlayingMessage) {
@@ -442,7 +451,12 @@ function setupLavalink(client) {
     const endedId = track?.info?.identifier || track?.encoded;
     const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
     if (endedId && currentId && endedId !== currentId) return;
-    void advance(client, player.guildId, payload?.reason === "stopped" ? "skipped" : "finished");
+
+    // Natural Lavalink completion is the single source of truth for moving
+    // through Vyne's custom queue. Explicit skips already advance themselves.
+    const reason = String(payload?.reason || "").toLowerCase();
+    if (reason === "stopped") return;
+    void advance(client, player.guildId, "finished");
   });
 
   client.lavalink.on("trackError", (player, track, payload) => {
@@ -898,194 +912,3 @@ async function handleMusicCommand(interaction, premiumActive) {
         const channel = guild?.channels.cache.get(session.voiceChannelId);
         if (guild && channel) {
           await connectToChannel(client, guild, channel).catch(err => {
-            console.error(`[Music:${guildId}] 24/7 skip reconnect failed:`, err?.message || err);
-          });
-        }
-      }
-    }
-
-    return payloadEmbed("⏭️ Skipped", session.current ? `Now playing **${session.current.title}**.` : "The queue is empty.");
-  }
-
-  if (sub === "stop") {
-    session.suppressNextEnd = true;
-    if (session.player) await session.player.stopPlaying(true, false).catch(() => {});
-    session.queue = [];
-    session.current = null;
-    session.lastRequester = null;
-    session.loop = "off";
-    await setMusicVoiceStatus(client, guildId, "⏹️ Music stopped");
-    stopNowPlayingUpdater(session);
-    if (!settings.always247) scheduleIdleDisconnect(client, guildId);
-    return payloadEmbed("⏹️ Stopped", settings.always247 ? "Playback stopped. 24/7 is still keeping Vyne in the voice channel." : "Playback stopped and the queue was cleared.", COLORS.success);
-  }
-
-  if (sub === "queue") {
-    const lines = [];
-    if (session.current) lines.push(`**Now:** ${trackLine(session.current)}`);
-    session.queue.slice(0, 20).forEach((track, i) => lines.push(trackLine(track, i + 1)));
-    return payloadEmbed("📜 Music Queue", lines.length ? lines.join("\n") : "The queue is empty.", COLORS.info);
-  }
-
-  if (sub === "nowplaying") {
-    if (!session.current) return payloadEmbed("🎵 Now Playing", "Nothing is currently playing.", COLORS.info);
-    return sendNowPlayingCard(interaction, guildId);
-  }
-
-  if (sub === "volume") {
-    const volume = interaction.options.getInteger("percent", true);
-    session.volume = volume;
-    settings.volume = volume;
-    savePersistent();
-    if (session.player) await session.player.setVolume(volume);
-    return payloadEmbed("🔊 Volume updated", `Volume is now **${volume}%**.`, COLORS.success);
-  }
-
-  if (sub === "seek") {
-    if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
-    const seconds = interaction.options.getInteger("seconds", true);
-    if (seconds >= session.current.duration) throw new Error("That seek position is beyond the track length.");
-    await session.player.seek(seconds * 1000);
-    session.current.seek = seconds;
-    session.current.startedAt = Date.now();
-    return payloadEmbed("⏩ Seeked", `Jumped to **${formatDuration(seconds)}** in **${session.current.title}**.`, COLORS.success);
-  }
-
-  if (sub === "loop") {
-    const mode = interaction.options.getString("mode", true);
-    session.loop = mode;
-    if (session.player) await session.player.setRepeatMode("off").catch(() => {});
-    return payloadEmbed("🔁 Loop updated", `Loop mode: **${mode}**.`, COLORS.success);
-  }
-
-  if (sub === "shuffle") {
-    for (let i = session.queue.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [session.queue[i], session.queue[j]] = [session.queue[j], session.queue[i]];
-    }
-    return payloadEmbed("🔀 Queue shuffled", session.queue.length ? `Shuffled **${session.queue.length}** queued tracks.` : "The queue is empty.", COLORS.success);
-  }
-
-  if (sub === "remove") {
-    const position = interaction.options.getInteger("position", true);
-    if (position < 1 || position > session.queue.length) throw new Error("That queue position does not exist.");
-    const removed = session.queue.splice(position - 1, 1)[0];
-    return payloadEmbed("🗑️ Removed", `Removed **${removed.title}** from the queue.`, COLORS.success);
-  }
-
-  if (sub === "clear") {
-    const count = session.queue.length;
-    session.queue = [];
-    return payloadEmbed("🧹 Queue cleared", `Removed **${count}** queued track(s).`, COLORS.success);
-  }
-
-  if (sub === "join") {
-    const channel = requireVoice(interaction);
-    await connectToChannel(client, interaction.guild, channel);
-    settings.voiceChannelId = channel.id;
-    settings.ownerId = interaction.user.id;
-    savePersistent();
-    return payloadEmbed("🔊 Joined voice", `Connected to <#${channel.id}>.`, COLORS.success);
-  }
-
-  if (sub === "disconnect") {
-    settings.always247 = false;
-    settings.voiceChannelId = null;
-    settings.ownerId = null;
-    savePersistent();
-    session.queue = [];
-    session.current = null;
-    await setMusicVoiceStatus(client, guildId, null).catch(() => {});
-    stopNowPlayingUpdater(session);
-    if (session.player) await session.player.destroy("Music disconnect").catch(() => {});
-    session.player = null;
-    session.voiceChannelId = null;
-    session.voiceStatus = null;
-    session.voiceStatusChannelId = null;
-    return payloadEmbed("👋 Disconnected", "Vyne left the voice channel and cleared the music session.", COLORS.success);
-  }
-
-  if (sub === "lyrics") {
-    const title = session.current?.title;
-    if (!title) throw new Error("Nothing is currently playing.");
-    const artist = session.current.channel || "";
-    const params = new URLSearchParams({ track_name: title, artist_name: artist });
-    const response = await fetch(`https://lrclib.net/api/get?${params.toString()}`);
-    if (!response.ok) throw new Error("Lyrics were not found for the current track.");
-    const data = await response.json();
-    const lyrics = String(data.plainLyrics || data.syncedLyrics || "").trim();
-    if (!lyrics) throw new Error("Lyrics were not found for the current track.");
-    return payloadEmbed(`🎤 Lyrics • ${title}`, lyrics.slice(0, 3800), COLORS.info);
-  }
-
-  if (sub === "autoplay" || sub === "fairplay" || sub === "247") {
-    const enabled = interaction.options.getBoolean("enabled", true);
-    if (sub === "autoplay") settings.autoplay = enabled;
-    if (sub === "fairplay") settings.fairplay = enabled;
-    if (sub === "247") {
-      settings.always247 = enabled;
-      if (enabled) {
-        const channel = requireVoice(interaction);
-        await connectToChannel(client, interaction.guild, channel);
-        settings.voiceChannelId = channel.id;
-        settings.ownerId = interaction.user.id;
-      } else {
-        settings.voiceChannelId = null;
-        settings.ownerId = null;
-        if (!session.current && session.player) {
-          await setMusicVoiceStatus(client, guildId, null).catch(() => {});
-          await session.player.destroy("24/7 disabled").catch(() => {});
-          session.player = null;
-          session.voiceChannelId = null;
-          session.voiceStatus = null;
-          session.voiceStatusChannelId = null;
-        }
-      }
-    }
-    savePersistent();
-    return payloadEmbed(
-      sub === "247" ? "♾️ 24/7 updated" : sub === "autoplay" ? "🔄 Autoplay updated" : "⚖️ Fair Play updated",
-      `${sub === "247" ? "24/7" : sub === "autoplay" ? "Autoplay" : "Fair Play"} is now **${enabled ? "enabled" : "disabled"}**.`,
-      COLORS.success
-    );
-  }
-
-  throw new Error("Unknown music command.");
-}
-
-async function restore247(client, premiumActive) {
-  setupLavalink(client);
-  clientUserIdFallback = client.user?.id || "vyne";
-  for (const [guildId, settings] of Object.entries(persistent)) {
-    if (!settings?.always247 || !settings.voiceChannelId || !settings.ownerId) continue;
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) continue;
-    if (!premiumActive(settings.ownerId, guildId)) {
-      settings.always247 = false;
-      settings.voiceChannelId = null;
-      settings.ownerId = null;
-      continue;
-    }
-    const channel = guild.channels.cache.get(settings.voiceChannelId);
-    if (!channel || channel.type !== 2) continue;
-    try {
-      await connectToChannel(client, guild, channel);
-      console.log(`[Music] Restored 24/7 connection in ${guild.name}.`);
-    } catch (err) {
-      console.error(`[Music] Failed to restore 24/7 in ${guild.name}:`, err?.message || err);
-    }
-  }
-  savePersistent();
-}
-
-function flushMusicData() {
-  savePersistent();
-}
-
-module.exports = {
-  handleMusicCommand,
-  restore247,
-  forceFixMusic,
-  flushMusicData,
-  setupLavalink
-};
