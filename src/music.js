@@ -570,7 +570,7 @@ async function forceFixMusic(guild, requesterId) {
     await new Promise(resolve => setTimeout(resolve, 900));
     await connectToChannel(guild, channel);
     await startCurrent(guildId, track, Math.min(elapsed, Math.max(0, track.duration - 1)));
-    return { track, elapsed };
+    return { track, elapsed, channelId: channel.id };
   } finally {
     session.advancing = false;
   }
