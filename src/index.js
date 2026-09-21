@@ -2348,7 +2348,7 @@ function ticketBuilderPanel(guildId) {
   const e = embed("🎫 Ticket Builder", "Customize the Premium ticket experience. Changes save immediately.", COLORS.primary).addFields(
     { name: "Panel", value: `**${truncate(p.panelTitle, 70)}**\n${truncate(p.panelDescription, 180)}`, inline: false },
     { name: "Categories", value: String(p.categories.length), inline: true },
-    { name: "Questions", value: String(p.questions.length), inline: true },
+    { name: "Questions", value: String(p.categories.reduce((total, category) => total + (Array.isArray(category.questions) ? category.questions.length : 0), 0)), inline: true },
     { name: "Claim", value: p.claimEnabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
     { name: "Close reason", value: p.closeReasonRequired ? "🟢 Required" : "🔴 Optional", inline: true },
     { name: "Transcript", value: p.transcriptEnabled ? "🟢 Enabled" : "🔴 Disabled", inline: true }
