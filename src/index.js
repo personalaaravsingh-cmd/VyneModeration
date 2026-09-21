@@ -4274,7 +4274,7 @@ client.once("clientReady", async readyClient => {
   await registerCommands().catch(err => console.error("❌ Command registration failed:", err));
   readyClient.user.setPresence({
     activities: [{ name: "/help • Vyne", type: 0 }],
-    status: "online"
+    status: "idle"
   });
 });
 
