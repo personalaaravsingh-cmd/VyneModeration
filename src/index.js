@@ -120,6 +120,38 @@ const antinukeTracker = new Map();
 const tempVoiceOwners = new Map();
 const analyticsPending = new Map();
 
+function getTempVoice(guildId, channelId) {
+  const cfg = getGuildData(guildId);
+  const stored = cfg.voicemaster?.rooms?.[channelId];
+  const memory = tempVoiceOwners.get(channelId);
+  if (memory && memory.guildId === guildId) return memory;
+  if (stored) {
+    const room = { guildId, ownerId: stored.ownerId, createdAt: stored.createdAt || Date.now() };
+    tempVoiceOwners.set(channelId, room);
+    return room;
+  }
+  return null;
+}
+
+function rememberTempVoice(guildId, channelId, ownerId, createdAt = Date.now()) {
+  const room = { guildId, ownerId, createdAt };
+  tempVoiceOwners.set(channelId, room);
+  const cfg = getGuildData(guildId);
+  if (!cfg.voicemaster.rooms || typeof cfg.voicemaster.rooms !== "object") cfg.voicemaster.rooms = {};
+  cfg.voicemaster.rooms[channelId] = { ownerId, createdAt };
+  writeJSON(FILES.config, db.config);
+  return room;
+}
+
+function forgetTempVoice(guildId, channelId) {
+  tempVoiceOwners.delete(channelId);
+  const cfg = getGuildData(guildId);
+  if (cfg.voicemaster?.rooms?.[channelId]) {
+    delete cfg.voicemaster.rooms[channelId];
+    writeJSON(FILES.config, db.config);
+  }
+}
+
 function readJSON(file, fallback = {}) {
   try {
     if (!fs.existsSync(file)) {
@@ -349,7 +381,8 @@ function defaultGuildConfig() {
       categoryId: null,
       hubChannelId: null,
       controlChannelId: null,
-      limitDefault: 0
+      limitDefault: 0,
+      rooms: {}
     },
     analytics: {
       enabled: false
@@ -1239,6 +1272,26 @@ async function handleAICommand(interaction) {
   }
 }
 
+function voiceMasterPanelPayload() {
+  return {
+    embeds: [embed("🎙️ VoiceMaster Controls",
+      "**Create your room**\nJoin the configured VoiceMaster hub and Vyne will automatically create a temporary room for you.\n\n**Room controls**\nUse the buttons below while you are inside your temporary room. Only the room owner can use management controls.",
+      COLORS.cyan)],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("vm_rename").setLabel("Rename").setEmoji("✏️").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("vm_limit").setLabel("Limit").setEmoji("👥").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("vm_lock").setLabel("Lock").setEmoji("🔒").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("vm_unlock").setLabel("Unlock").setEmoji("🔓").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("vm_claim").setLabel("Claim").setEmoji("👑").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("vm_delete").setLabel("Delete Room").setEmoji("🗑️").setStyle(ButtonStyle.Danger)
+      )
+    ]
+  };
+}
+
 const commands = [
   new SlashCommandBuilder().setName("help").setDescription("Open Vyne's clean interactive help center."),
   new SlashCommandBuilder().setName("ping").setDescription("Check Vyne's latency."),
@@ -1367,10 +1420,12 @@ const commands = [
 
   new SlashCommandBuilder().setName("voicemaster").setDescription("Temporary voice rooms • 💎 Premium.")
     .addSubcommand(s => s.setName("setup").setDescription("Configure the temporary voice hub • 💎 Premium.")
-      .addChannelOption(o => o.setName("hub").setDescription("Existing voice hub"))
-      .addChannelOption(o => o.setName("category").setDescription("Category for temporary rooms"))
-      .addChannelOption(o => o.setName("control_channel").setDescription("Text channel for instructions")))
+      .addChannelOption(o => o.setName("hub").setDescription("Existing voice hub").addChannelTypes(ChannelType.GuildVoice))
+      .addChannelOption(o => o.setName("category").setDescription("Category for temporary rooms").addChannelTypes(ChannelType.GuildCategory))
+      .addChannelOption(o => o.setName("control_channel").setDescription("Text channel for instructions").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)))
     .addSubcommand(s => s.setName("panel").setDescription("View VoiceMaster controls • 💎 Premium."))
+    .addSubcommand(s => s.setName("panelsend").setDescription("Send the VoiceMaster controls panel to a channel • 💎 Premium.")
+      .addChannelOption(o => o.setName("channel").setDescription("Text channel where the panel should be sent.").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)))
     .addSubcommand(s => s.setName("rename").setDescription("Rename your temporary room • 💎 Premium.")
       .addStringOption(o => o.setName("name").setDescription("New name").setRequired(true)))
     .addSubcommand(s => s.setName("limit").setDescription("Set your room user limit • 💎 Premium.")
@@ -2785,6 +2840,11 @@ client.on("messageUpdate", (oldMessage, newMessage) => {
   ]);
 });
 
+client.on("channelDelete", channel => {
+  if (!channel?.guild) return;
+  if (tempVoiceOwners.has(channel.id)) forgetTempVoice(channel.guild.id, channel.id);
+});
+
 client.on("voiceStateUpdate", async (oldState, newState) => {
   if (!newState.guild || oldState.channelId === newState.channelId) return;
   const cfg = getGuildData(newState.guild.id);
@@ -2805,9 +2865,9 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
         userLimit: Number(cfg.voicemaster.limitDefault || 0),
         reason: `Vyne VoiceMaster room for ${newState.member?.user.tag || newState.id}`
       });
-      tempVoiceOwners.set(room.id, { guildId: newState.guild.id, ownerId: newState.id, createdAt: Date.now() });
+      rememberTempVoice(newState.guild.id, room.id, newState.id);
       await newState.setChannel(room).catch(async () => {
-        tempVoiceOwners.delete(room.id);
+        forgetTempVoice(newState.guild.id, room.id);
         await room.delete().catch(() => {});
       });
       const control = cfg.voicemaster.controlChannelId ? newState.guild.channels.cache.get(cfg.voicemaster.controlChannelId) : null;
@@ -2822,7 +2882,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   if (oldState.channelId && tempVoiceOwners.has(oldState.channelId)) {
     const channel = oldState.guild.channels.cache.get(oldState.channelId);
     if (channel && channel.members.size === 0) {
-      tempVoiceOwners.delete(oldState.channelId);
+      forgetTempVoice(oldState.guild.id, oldState.channelId);
       setTimeout(() => {
         if (channel.members.size === 0) channel.delete("Vyne VoiceMaster empty room").catch(() => {});
       }, 1500);
@@ -2932,6 +2992,46 @@ async function handleInteraction(interaction) {
     }
 
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith("vm_")) {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        const voice=interaction.member?.voice?.channel;
+        const temp=voice?getTempVoice(interaction.guildId,voice.id):null;
+        if(!voice||!temp) return safeReply(interaction,{embeds:[errorEmbed("No temporary room","Join your temporary VoiceMaster room first.")],flags:MessageFlags.Ephemeral});
+        if(interaction.customId==="vm_claim"){
+          if(temp.ownerId!==interaction.user.id&&voice.members.size===1){
+            rememberTempVoice(interaction.guildId,voice.id,interaction.user.id,temp.createdAt);
+            return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")]});
+          }
+          if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Claim unavailable","This room is still owned by another user.")],flags:MessageFlags.Ephemeral});
+          return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")]});
+        }
+        if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Not the owner","Only the room owner can use these controls.")],flags:MessageFlags.Ephemeral});
+        if(interaction.customId==="vm_rename"){
+          const modal=new ModalBuilder().setCustomId("vm_rename_modal").setTitle("Rename Voice Room").addComponents(
+            new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("name").setLabel("New room name").setPlaceholder("e.g. My Lounge").setMinLength(1).setMaxLength(95).setRequired(true).setStyle(TextInputStyle.Short))
+          );
+          return interaction.showModal(modal);
+        }
+        if(interaction.customId==="vm_limit"){
+          const modal=new ModalBuilder().setCustomId("vm_limit_modal").setTitle("Voice User Limit").addComponents(
+            new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("users").setLabel("User limit (0-99)").setPlaceholder("0 = unlimited").setMinLength(1).setMaxLength(2).setRequired(true).setStyle(TextInputStyle.Short))
+          );
+          return interaction.showModal(modal);
+        }
+        if(interaction.customId==="vm_lock"){
+          await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:false});
+          return safeReply(interaction,{embeds:[success("Voice locked","New users can no longer connect.")]});
+        }
+        if(interaction.customId==="vm_unlock"){
+          await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:null});
+          return safeReply(interaction,{embeds:[success("Voice unlocked","Users can connect again.")]});
+        }
+        if(interaction.customId==="vm_delete"){
+          forgetTempVoice(interaction.guildId,voice.id);
+          await voice.delete("Vyne VoiceMaster delete");
+          return safeReply(interaction,{embeds:[success("Voice deleted","Your temporary room was deleted.")],flags:MessageFlags.Ephemeral});
+        }
+      }
       if (interaction.customId === "vyne_report_new") return interaction.showModal(bugReportModal());
       if (interaction.customId === "vyne_help_back") return interaction.update(helpPayload("home"));
       if (interaction.customId === "botstats_refresh") { await deferOnce(interaction); return interaction.editReply(await botStatsEmbed()); }
@@ -3019,6 +3119,27 @@ async function handleInteraction(interaction) {
     }
 
     if (interaction.isModalSubmit()) {
+      if (interaction.customId === "vm_rename_modal" || interaction.customId === "vm_limit_modal") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        const voice=interaction.member?.voice?.channel;
+        const temp=voice?getTempVoice(interaction.guildId,voice.id):null;
+        if(!voice||!temp)return safeReply(interaction,{embeds:[errorEmbed("No temporary room","Join your temporary VoiceMaster room first.")],flags:MessageFlags.Ephemeral});
+        if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Not the owner","Only the room owner can use these controls.")],flags:MessageFlags.Ephemeral});
+        try{
+          if(interaction.customId==="vm_rename_modal"){
+            const name=interaction.fields.getTextInputValue("name").trim();
+            await voice.setName(name);
+            return safeReply(interaction,{embeds:[success("Voice renamed","Room renamed to **"+name+"**.")],flags:MessageFlags.Ephemeral});
+          }
+          const raw=interaction.fields.getTextInputValue("users").trim();
+          const n=Number(raw);
+          if(!Number.isInteger(n)||n<0||n>99)return safeReply(interaction,{embeds:[errorEmbed("Invalid limit","Enter a whole number from **0 to 99**.")],flags:MessageFlags.Ephemeral});
+          await voice.setUserLimit(n);
+          return safeReply(interaction,{embeds:[success("Voice limit updated","Limit: **"+(n===0?"Unlimited":n)+"**.")],flags:MessageFlags.Ephemeral});
+        }catch(err){
+          return safeReply(interaction,{embeds:[errorEmbed("VoiceMaster error",truncate(err?.message||err,1200))],flags:MessageFlags.Ephemeral});
+        }
+      }
       if (interaction.customId === "vyne_bug_report_modal") {
         const key = "bugreport:" + interaction.user.id;
         const now = Date.now();
@@ -3321,15 +3442,26 @@ async function handleInteraction(interaction) {
       const sub=interaction.options.getSubcommand(),v=getGuildData(interaction.guildId).voicemaster;
       if(sub==="setup"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});await deferOnce(interaction);let hub=interaction.options.getChannel("hub"),cat=interaction.options.getChannel("category"),control=interaction.options.getChannel("control_channel");if(!cat)cat=await interaction.guild.channels.create({name:"Vyne Voice",type:ChannelType.GuildCategory,reason:"Vyne VoiceMaster setup"});if(!hub)hub=await interaction.guild.channels.create({name:"➕ Join to Create",type:ChannelType.GuildVoice,parent:cat.id,reason:"Vyne VoiceMaster setup"});v.enabled=true;v.categoryId=cat.id;v.hubChannelId=hub.id;v.controlChannelId=control?.id||v.controlChannelId||interaction.channelId;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("VoiceMaster configured",`Hub: ${hub}\nCategory: <#${cat.id}>`)]});}
       if(sub==="panel")return safeReply(interaction,{embeds:[embed("🎙️ VoiceMaster","Join the configured hub to create your private room. Then use `/voicemaster rename`, `/limit`, `/lock`, `/unlock`, `/claim` or `/delete`.",COLORS.cyan)]});
+      if(sub==="panelsend"){
+        if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions to send a VoiceMaster panel.")],flags:MessageFlags.Ephemeral});
+        const channel=interaction.options.getChannel("channel");
+        if(!channel?.isTextBased())return safeReply(interaction,{embeds:[errorEmbed("Invalid channel","Choose a text channel for the VoiceMaster panel.")],flags:MessageFlags.Ephemeral});
+        try{
+          const sent=await channel.send(voiceMasterPanelPayload());
+          return safeReply(interaction,{embeds:[success("VoiceMaster panel sent","The controls panel was sent to "+sent.channel+".")],flags:MessageFlags.Ephemeral});
+        }catch(err){
+          return safeReply(interaction,{embeds:[errorEmbed("Panel send failed",truncate(err?.message||err,1200))],flags:MessageFlags.Ephemeral});
+        }
+      }
       const voice=interaction.member?.voice?.channel;const temp=voice?getTempVoice(interaction.guildId,voice.id):null;
-      if(sub==="claim"){if(!voice||!temp)return safeReply(interaction,{embeds:[errorEmbed("No room","Join a temporary room first.")],flags:MessageFlags.Ephemeral});if(temp.ownerId!==interaction.user.id&&voice.members.size===1){temp.ownerId=interaction.user.id;tempVoiceOwners.set(voice.id,temp);return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")]});}if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Claim unavailable","This room is still owned by another user.")]});return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")]});}
+      if(sub==="claim"){if(!voice||!temp)return safeReply(interaction,{embeds:[errorEmbed("No room","Join a temporary room first.")],flags:MessageFlags.Ephemeral});if(temp.ownerId!==interaction.user.id&&voice.members.size===1){temp.ownerId=interaction.user.id;rememberTempVoice(interaction.guildId,voice.id,interaction.user.id,temp.createdAt);return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")]});}if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Claim unavailable","This room is still owned by another user.")]});return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")]});}
       if(!temp)return safeReply(interaction,{embeds:[errorEmbed("No temporary room","Join your temporary VoiceMaster room first.")],flags:MessageFlags.Ephemeral});
       if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Not the owner","Only the room owner can use this control.")],flags:MessageFlags.Ephemeral});
       if(sub==="rename"){await voice.setName(interaction.options.getString("name"));return safeReply(interaction,{embeds:[success("Voice renamed",`Room renamed to **${voice.name}**.`)]});}
       if(sub==="limit"){const n=interaction.options.getInteger("users");await voice.setUserLimit(n);return safeReply(interaction,{embeds:[success("Voice limit updated",`Limit: **${n}**.`)]});}
       if(sub==="lock"){await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:false});return safeReply(interaction,{embeds:[success("Voice locked","New users can no longer connect.")]});}
       if(sub==="unlock"){await voice.permissionOverwrites.edit(interaction.guild.roles.everyone,{Connect:null});return safeReply(interaction,{embeds:[success("Voice unlocked","Users can connect again.")]});}
-      if(sub==="delete"){tempVoiceOwners.delete(voice.id);await voice.delete("Vyne VoiceMaster delete");return safeReply(interaction,{embeds:[success("Voice deleted","Your temporary room was deleted.")],flags:MessageFlags.Ephemeral});}
+      if(sub==="delete"){forgetTempVoice(interaction.guildId,voice.id);await voice.delete("Vyne VoiceMaster delete");return safeReply(interaction,{embeds:[success("Voice deleted","Your temporary room was deleted.")],flags:MessageFlags.Ephemeral});}
     }
 
     if(command==="analytics"){
