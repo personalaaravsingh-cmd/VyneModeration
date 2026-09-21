@@ -79,7 +79,7 @@ function sessionFor(guildId) {
     voiceStatus: null,
     voiceStatusChannelId: null,
     client: null,
-    suppressNextEnd: false
+    suppressNextEndTrackId: null
   };
   sessions.set(guildId, session);
   return session;
@@ -440,8 +440,9 @@ function setupLavalink(client) {
     if (!player?.guildId) return;
     const session = sessions.get(player.guildId);
     if (!session) return;
-    if (session.suppressNextEnd) {
-      session.suppressNextEnd = false;
+    const endedId = track?.info?.identifier || track?.encoded;
+    if (session.suppressNextEndTrackId && endedId === session.suppressNextEndTrackId) {
+      session.suppressNextEndTrackId = null;
       return;
     }
     if (session.advancing) return;
@@ -451,7 +452,6 @@ function setupLavalink(client) {
       session.lastCardSecond = null;
     }
 
-    const endedId = track?.info?.identifier || track?.encoded;
     const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
     if (endedId && currentId && endedId !== currentId) return;
 
@@ -889,10 +889,10 @@ async function handleMusicCommand(interaction, premiumActive) {
   if (sub === "skip") {
     if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
 
-    session.suppressNextEnd = true;
     const player = session.player;
+    session.suppressNextEndTrackId = session.current.id || session.current.lavaTrack?.info?.identifier || session.current.lavaTrack?.encoded || null;
     await player.stopPlaying(false, false).catch(err => {
-      session.suppressNextEnd = false;
+      session.suppressNextEndTrackId = null;
       throw err;
     });
     await advance(client, guildId, "skipped");
@@ -915,8 +915,14 @@ async function handleMusicCommand(interaction, premiumActive) {
   }
 
   if (sub === "stop") {
-    session.suppressNextEnd = true;
-    if (session.player) await session.player.stopPlaying(true, false).catch(() => {});
+    session.suppressNextEndTrackId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded || null;
+    if (session.player) {
+      await session.player.stopPlaying(true, false).catch(() => {
+        session.suppressNextEndTrackId = null;
+      });
+    } else {
+      session.suppressNextEndTrackId = null;
+    }
     session.queue = [];
     session.current = null;
     session.lastRequester = null;
