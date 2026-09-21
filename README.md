@@ -1,16 +1,44 @@
-VYNE 🎧
+# Vyne Moderation 🛡️
 
-VYNE is a modern, feature-rich Discord music bot built to bring a smooth and reliable music experience directly into your Discord server.
+Vyne is a modern Discord moderation, security and server-management bot built with Discord.js.
 
-Designed with a clean interface and a focus on simplicity, VYNE lets users enjoy their favorite music without complicated setups or unnecessary clutter. From playing tracks and managing queues to controlling playback and viewing what's currently playing, everything is built around making music easy.
+## Features
 
-✦ Features
+- 🛡️ Moderation — bans, kicks, timeouts, warnings, purges, locks and role management
+- ☢️ Security — AutoMod, Anti-Nuke, raid protection and verification
+- 🎫 Tickets — free ticket tools with Premium customization
+- 👋 Welcome & VoiceMaster — server onboarding and temporary voice channels
+- 📊 Analytics & leveling
+- 🤖 Optional Gemini-powered AI
+- 💰 Economy, giveaways, polls and reminders
+- 🚨 Member reports sent privately to the configured staff log channel
+- ◆ Premium and ⚡ No-Prefix access systems
+- ⚙️ Hosting/deployment controls through Bot-Hosting
 
+## Setup
 
-• ⚡ Fast and responsive commands
-• 🖤 Clean, modern Discord embeds
-• 🛠️ Designed with performance and reliability in mind
+1. Install dependencies:
+   `npm install`
+2. Create a `.env` file with the required Discord credentials.
+3. Start the bot:
+   `npm start`
 
-VYNE is continuously being developed with new features, improvements, and refinements planned for future releases.
+For AI features, configure `GEMINI_API_KEY`.
 
-VYNE — Music that fits the vibe.
+## Useful commands
+
+- `/help` — interactive command center
+- `/ping` — bot/WebSocket latency
+- `/report @user reason` — privately report a member to staff
+- `/logchannel #channel` — configure the staff log channel
+- `/sys status` — view hosting status
+
+## Development
+
+Run the built-in syntax check with:
+
+```bash
+npm test
+```
+
+Vyne — moderation, security and server tools in one place.
