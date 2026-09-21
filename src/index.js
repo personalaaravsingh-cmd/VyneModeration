@@ -3005,7 +3005,7 @@ async function handleInteraction(interaction) {
         }
         if(action==="info"){
           return safeReply(interaction,{embeds:[embed("🎙️ Room Information",
-            \`**Channel:** \${voice}\\n**Owner:** <@\${temp.ownerId}>\\n**Members:** \${voice.members.size}\\n**Limit:** \${voice.userLimit || "Unlimited"}\\n**Created:** <t:\${Math.floor(temp.createdAt/1000)}:R>\`,
+            "**Channel:** "+voice+"\n**Owner:** <@"+temp.ownerId+">\n**Members:** "+voice.members.size+"\n**Limit:** "+(voice.userLimit || "Unlimited")+"\n**Created:** <t:"+Math.floor(temp.createdAt/1000)+":R>",
             COLORS.cyan)],flags:MessageFlags.Ephemeral});
         }
         if(action==="delete"){
@@ -3097,10 +3097,10 @@ async function handleInteraction(interaction) {
         if(interaction.customId==="vm_claim"){
           if(temp.ownerId!==interaction.user.id&&voice.members.size===1){
             rememberTempVoice(interaction.guildId,voice.id,interaction.user.id,temp.createdAt);
-            return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")]});
+            return safeReply(interaction,{embeds:[success("Room claimed","You now own this temporary room.")],flags:MessageFlags.Ephemeral});
           }
           if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Claim unavailable","This room is still owned by another user.")],flags:MessageFlags.Ephemeral});
-          return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")]});
+          return safeReply(interaction,{embeds:[infoEmbed("Already owner","You already own this room.")],flags:MessageFlags.Ephemeral});
         }
         if(temp.ownerId!==interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Not the owner","Only the room owner can use these controls.")],flags:MessageFlags.Ephemeral});
         if(interaction.customId==="vm_rename"){
@@ -3232,11 +3232,11 @@ async function handleInteraction(interaction) {
             if(!target.voice?.channelId || target.voice.channelId!==voice.id)return safeReply(interaction,{embeds:[errorEmbed("Not in your room","That member must currently be in your temporary room.")],flags:MessageFlags.Ephemeral});
             if(interaction.customId==="vm_transfer_modal"){
               rememberTempVoice(interaction.guildId,voice.id,target.id,temp.createdAt);
-              return safeReply(interaction,{embeds:[success("Ownership transferred",\`<@\${target.id}> now owns \${voice}.\`)],flags:MessageFlags.Ephemeral});
+              return safeReply(interaction,{embeds:[success("Ownership transferred"," <@"+target.id+"> now owns "+voice+".")],flags:MessageFlags.Ephemeral});
             }
             if(target.id===interaction.user.id)return safeReply(interaction,{embeds:[errorEmbed("Invalid target","You cannot disconnect yourself.")],flags:MessageFlags.Ephemeral});
             await target.voice.disconnect("Vyne VoiceMaster owner control");
-            return safeReply(interaction,{embeds:[success("User disconnected",\`Disconnected <@\${target.id}> from the room.\`)],flags:MessageFlags.Ephemeral});
+            return safeReply(interaction,{embeds:[success("User disconnected","Disconnected <@"+target.id+"> from the room.")],flags:MessageFlags.Ephemeral});
           }
           if(interaction.customId==="vm_rename_modal"){
             const name=interaction.fields.getTextInputValue("name").trim();
