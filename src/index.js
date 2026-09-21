@@ -1188,6 +1188,11 @@ const commands = [
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("message").setDescription("Message").setRequired(true))
     .addChannelOption(o => o.setName("channel").setDescription("Destination channel")),
+  new SlashCommandBuilder().setName("report").setDescription("Report a member to server staff.")
+    .addUserOption(o => o.setName("user").setDescription("Member to report").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Why you are reporting them").setRequired(true))
+    .addStringOption(o => o.setName("evidence").setDescription("Optional evidence link or extra context")),
+
   new SlashCommandBuilder().setName("remind").setDescription("Create a reminder.")
     .addStringOption(o => o.setName("time").setDescription("e.g. 10m, 2h, 1d").setRequired(true))
     .addStringOption(o => o.setName("message").setDescription("Reminder").setRequired(true)),
@@ -1293,7 +1298,7 @@ function helpPayload(page = "home") {
       fields: [
         { name: "🛡️ Moderation", value: "`/ban` · `/kick` · `/timeout` · `/warn` · `/purge` · `/lock` · `/role`", inline: false },
         { name: "☢️ Security", value: "`/automod` · `/antinuke` · `/raid` · `/verify`", inline: false },
-        { name: "🎫 Community", value: "`/ticket` · `/welcome` · `/voicemaster` · `/giveaway` · `/poll`", inline: false },
+        { name: "🎫 Community", value: "`/ticket` · `/welcome` · `/voicemaster` · `/giveaway` · `/poll` · `/report`", inline: false },
         { name: "📊 Tools", value: "`/analytics` `/level` `/leaderboard` `/balance` `/daily` `/pay` `/remind`", inline: false },
         { name: "◆ Premium", value: "Advanced customization and controls. Every Premium plan unlocks the same features; only duration changes.", inline: false },
         { name: "⚡ No-Prefix", value: "Separate access system for running supported commands without a prefix.", inline: false }
@@ -1365,7 +1370,8 @@ function helpPayload(page = "home") {
         { name: "Tickets & Welcome", value: "`/ticket` and `/welcome`", inline: false },
         { name: "Giveaways", value: "`/giveaway start` `/giveaway end` `/giveaway reroll`", inline: false },
         { name: "Polls", value: "`/poll`", inline: false },
-        { name: "Notifications", value: "`/notify set` `/notify test`\nYouTube/Reddit feeds • 💎 Premium", inline: false }
+        { name: "Notifications", value: "`/notify set` `/notify test`\nYouTube/Reddit feeds • 💎 Premium", inline: false },
+        { name: "Reports", value: "`/report @user reason` → sends a private report to the configured staff log channel.", inline: false }
       ]
     },
     ai: {
@@ -2825,6 +2831,52 @@ async function handleInteraction(interaction) {
     }
 
     if(command==="announce"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const ch=interaction.options.getChannel("channel")||interaction.channel;await ch.send({embeds:[embed(`📢 ${interaction.options.getString("title")}`,interaction.options.getString("message"),COLORS.primary)]});return safeReply(interaction,{embeds:[success("Announcement sent",`Posted in ${ch}.`)],flags:MessageFlags.Ephemeral});}
+    if(command==="report"){
+      const key=`report:${interaction.guildId}:${interaction.user.id}`;
+      const now=Date.now();
+      const last=cooldowns.get(key)||0;
+      const reportCooldown=30000;
+      if(now-last<reportCooldown){
+        return safeReply(interaction,{embeds:[warningEmbed("Report cooldown",`Please wait **${Math.ceil((reportCooldown-(now-last))/1000)}s** before sending another report.`)],flags:MessageFlags.Ephemeral});
+      }
+
+      const cfg=getGuildData(interaction.guildId);
+      if(!cfg.logChannelId){
+        return safeReply(interaction,{embeds:[errorEmbed("Reports are not configured","Server staff need to set a staff log channel with `/logchannel #channel` before reports can be submitted.")],flags:MessageFlags.Ephemeral});
+      }
+
+      const reportChannel=interaction.guild.channels.cache.get(cfg.logChannelId);
+      if(!reportChannel?.isTextBased()){
+        return safeReply(interaction,{embeds:[errorEmbed("Report channel unavailable","The configured staff log channel no longer exists or cannot receive messages.")],flags:MessageFlags.Ephemeral});
+      }
+
+      const target=interaction.options.getUser("user");
+      const reason=truncate(interaction.options.getString("reason"),1000);
+      const evidence=truncate(interaction.options.getString("evidence")||"No evidence provided.",1000);
+
+      try{
+        await reportChannel.send({
+          embeds:[embed(
+            "🚨 Member Report",
+            `A member report was submitted for review.`,
+            COLORS.warning
+          ).addFields(
+            {name:"Reported User",value:`<@!${target.id}> (${target.tag})\n`+`ID: \`${target.id}\``,inline:false},
+            {name:"Reported By",value:`<@!${interaction.user.id}>\nID: \`${interaction.user.id}\``,inline:true},
+            {name:"Channel",value:`<#${interaction.channelId}>`,inline:true},
+            {name:"Reason",value:reason||"No reason provided.",inline:false},
+            {name:"Evidence / Context",value:evidence||"No evidence provided.",inline:false}
+          )],
+          allowedMentions:{parse:[]}
+        });
+        cooldowns.set(key,now);
+        return safeReply(interaction,{embeds:[success("Report submitted","Your report has been sent privately to the server staff.")],flags:MessageFlags.Ephemeral});
+      }catch(err){
+        console.error("Report submission error:",err?.stack||err);
+        return safeReply(interaction,{embeds:[errorEmbed("Report failed","Vyne could not send the report to the configured staff log channel.")],flags:MessageFlags.Ephemeral});
+      }
+    }
+
     if(command==="remind"){const d=parseDuration(interaction.options.getString("time"));if(!d)return safeReply(interaction,{embeds:[errorEmbed("Invalid time","Use `10m`, `2h`, `1d`, etc.")],flags:MessageFlags.Ephemeral});const at=Date.now()+d;if(!db.reminders[interaction.guildId])db.reminders[interaction.guildId]=[];db.reminders[interaction.guildId].push({guildId:interaction.guildId,userId:interaction.user.id,channelId:interaction.channelId,message:interaction.options.getString("message"),at});writeJSON(FILES.reminders,db.reminders);return safeReply(interaction,{embeds:[success("Reminder created",`I'll remind you <t:${Math.floor(at/1000)}:R>.`)]});}
 
     if(command==="notify"){
