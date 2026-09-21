@@ -3635,7 +3635,7 @@ async function handleInteraction(interaction) {
       voicemaster: () => true,
       ticket: () => interaction.options.getSubcommand(false) === "builder",
       welcome: () => ["advanced", "preview"].includes(interaction.options.getSubcommand(false)),
-      notify: () => ["youtube", "reddit", "remove", "list"].includes(interaction.options.getSubcommand(false))
+      notify: () => ["youtube", "reddit", "remove", "list"].includes(interaction.options.getSubcommand(false)),
       music: () => ["autoplay", "fairplay", "247"].includes(interaction.options.getSubcommand(false))
     };
     const premiumRule = premiumSubcommandRules[command];
