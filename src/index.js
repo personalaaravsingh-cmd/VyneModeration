@@ -3333,7 +3333,7 @@ async function handleInteraction(interaction) {
       // must open a modal as its initial interaction response.
       console.log(`📨 Interaction received: /${interaction.commandName}`);
       await interaction.deferReply({
-        flags: ["help", "about"].includes(interaction.commandName) ? undefined : MessageFlags.Ephemeral
+        flags: ["help", "about", "music"].includes(interaction.commandName) ? undefined : MessageFlags.Ephemeral
       });
     }
 
@@ -3823,6 +3823,7 @@ async function handleInteraction(interaction) {
     if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
     if(command==="ask") return handleAICommand(interaction);
     if(command==="music") {
+      // Music responses are intentionally public so everyone in the voice channel can see them.
       // Music handlers may return a payload (pause/resume/queue/etc.) or null
       // when they have already sent/edited the interaction (e.g. /play).
       const musicResult = await handleMusicCommand(interaction, premiumActive);
