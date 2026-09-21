@@ -293,9 +293,8 @@ function defaultGuildConfig() {
         buttonEmoji: "🎫",
         panelImage: null,
         categories: [
-          { id: "general", name: "General Support", description: "General questions or support.", emoji: "🎫" }
+          { id: "general", name: "General Support", description: "General questions or support.", emoji: "🎫", questions: [] }
         ],
-        questions: [],
         claimEnabled: true,
         closeReasonRequired: false,
         transcriptEnabled: true,
@@ -423,8 +422,34 @@ function ensureGuild(guildId) {
   return db.config[guildId];
 }
 
+function normalizeTicketConfig(cfg) {
+  const p = cfg.tickets?.premium;
+  if (!p) return false;
+  if (!Array.isArray(p.categories) || !p.categories.length) {
+    p.categories = [{ id: "general", name: "General Support", description: "General questions or support.", emoji: "🎫", questions: [] }];
+  }
+  let changed = false;
+  for (const category of p.categories) {
+    if (!Array.isArray(category.questions)) {
+      category.questions = [];
+      changed = true;
+    }
+  }
+  if (Array.isArray(p.questions) && p.questions.length) {
+    if (!p.categories[0].questions.length) p.categories[0].questions = p.questions.slice(0, 5);
+    delete p.questions;
+    changed = true;
+  } else if (Object.prototype.hasOwnProperty.call(p, "questions")) {
+    delete p.questions;
+    changed = true;
+  }
+  return changed;
+}
+
 function getGuildData(guildId) {
-  return ensureGuild(guildId);
+  const cfg = ensureGuild(guildId);
+  if (normalizeTicketConfig(cfg)) writeJSON(FILES.config, db.config);
+  return cfg;
 }
 
 function embed(title, description = "", color = COLORS.primary) {
@@ -2143,8 +2168,10 @@ function automodAdvancedPanel(guildId) {
 }
 
 function buildTicketQuestionModal(guildId, categoryId) {
-  const questions = getGuildData(guildId).tickets.premium.questions.slice(0, 5);
-  const modal = new ModalBuilder().setCustomId(`ticket_questions_${categoryId}`).setTitle("Ticket Questions");
+  const cfg = getGuildData(guildId);
+  const category = cfg.tickets.premium.categories.find(c => c.id === categoryId) || cfg.tickets.premium.categories[0];
+  const questions = (category?.questions || []).slice(0, 5);
+  const modal = new ModalBuilder().setCustomId(`ticket_questions_${category?.id || categoryId}`).setTitle(`${truncate(category?.name || "Ticket", 35)} Questions`);
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     modal.addComponents(new ActionRowBuilder().addComponents(
@@ -2177,8 +2204,8 @@ function buildTicketCategoryModal() {
   );
 }
 
-function buildTicketQuestionBuilderModal() {
-  return new ModalBuilder().setCustomId("ticket_builder_question_modal").setTitle("Add Ticket Question").addComponents(
+function buildTicketQuestionBuilderModal(categoryId) {
+  return new ModalBuilder().setCustomId(`ticket_builder_question_modal_${categoryId}`).setTitle("Add Ticket Question").addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_label").setLabel("Question").setRequired(true).setStyle(TextInputStyle.Short)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_placeholder").setLabel("Placeholder").setRequired(false).setStyle(TextInputStyle.Short)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("question_required").setLabel("Required? yes/no").setRequired(false).setStyle(TextInputStyle.Short))
@@ -2346,16 +2373,18 @@ function ticketPanelPayload(guildId) {
   if (p.panelImage) e.setImage(p.panelImage);
 
   const components = [];
-  if (p.categories.length > 1 && (cfg.tickets.advancedEnabled || false)) {
-    const menu = new StringSelectMenuBuilder().setCustomId("vyne_ticket_category").setPlaceholder("Choose a ticket category").addOptions(
-      p.categories.slice(0, 25).map(c => ({ label: truncate(c.name || "Category", 100), value: String(c.id).slice(0, 100), description: truncate(c.description || "", 100), emoji: c.emoji || "🎫" }))
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("vyne_ticket_category")
+    .setPlaceholder("Choose a ticket category")
+    .addOptions(
+      p.categories.slice(0, 25).map(c => ({
+        label: truncate(c.name || "Category", 100),
+        value: String(c.id).slice(0, 100),
+        description: truncate(c.description || "Open a private support ticket.", 100),
+        emoji: c.emoji || "🎫"
+      }))
     );
-    components.push(new ActionRowBuilder().addComponents(menu));
-  } else {
-    components.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("vyne_ticket_create").setLabel(p.buttonLabel || "Create Ticket").setEmoji(p.buttonEmoji || "🎫").setStyle(ButtonStyle.Primary)
-    ));
-  }
+  components.push(new ActionRowBuilder().addComponents(menu));
   return { embeds: [e], components };
 }
 
@@ -3049,10 +3078,20 @@ async function handleInteraction(interaction) {
         const cfg=getGuildData(interaction.guildId);
         if (!cfg.tickets.enabled) return safeReply(interaction,{embeds:[errorEmbed("Tickets unavailable","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});
         const categoryId=interaction.values[0];
-        if (cfg.tickets.premium.questions.length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,categoryId));
+        const category=cfg.tickets.premium.categories.find(c=>c.id===categoryId);
+        if (!category) return safeReply(interaction,{embeds:[errorEmbed("Invalid category","That ticket category no longer exists. Please use the latest panel.")],flags:MessageFlags.Ephemeral});
+        const questions=(category.questions||[]).slice(0,5);
+        if (premiumActive(interaction.user.id,interaction.guildId) && questions.length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,categoryId));
         await deferOnce(interaction, MessageFlags.Ephemeral);
         const channel=await createTicketChannel(interaction,categoryId);
         return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${channel}.`)],flags:MessageFlags.Ephemeral});
+      }
+
+      if (interaction.customId === "ticket_builder_question_category") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const categoryId=interaction.values[0];
+        return interaction.showModal(buildTicketQuestionBuilderModal(categoryId));
       }
       if (interaction.customId.startsWith("premium_plan_")) {
         if (!ownerOnly(interaction)) return interaction.update({embeds:[ownerGuardEmbed()],components:[]});
@@ -3158,7 +3197,8 @@ async function handleInteraction(interaction) {
         try {
           const cfg=getGuildData(interaction.guildId);
           if(!cfg.tickets.enabled) return safeReply(interaction,{embeds:[errorEmbed("Tickets unavailable","Run `/ticket setup` first.")],flags:MessageFlags.Ephemeral});
-          if(premiumActive(interaction.user.id,interaction.guildId)&&cfg.tickets.premium.questions.length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,cfg.tickets.premium.categories[0]?.id||"general"));
+          const firstCategory=cfg.tickets.premium.categories[0];
+           if(premiumActive(interaction.user.id,interaction.guildId)&&(firstCategory?.questions||[]).length) return interaction.showModal(buildTicketQuestionModal(interaction.guildId,firstCategory.id));
           await deferOnce(interaction, MessageFlags.Ephemeral);
           const ch=await createTicketChannel(interaction,cfg.tickets.premium.categories[0]?.id||"general");
           return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${ch}.`)],flags:MessageFlags.Ephemeral});
@@ -3184,7 +3224,21 @@ async function handleInteraction(interaction) {
       if (interaction.customId === "antinuke_unlock") { if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral}); await deferOnce(interaction); await disableLockdown(interaction.guild); return interaction.editReply(antiNukePanel(interaction.guildId)); }
       if (interaction.customId === "ticket_builder_edit") return interaction.showModal(buildTicketPanelModal());
       if (interaction.customId === "ticket_builder_category") return interaction.showModal(buildTicketCategoryModal());
-      if (interaction.customId === "ticket_builder_question") return interaction.showModal(buildTicketQuestionBuilderModal());
+      if (interaction.customId === "ticket_builder_question") {
+        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+        const p=getGuildData(interaction.guildId).tickets.premium;
+        const menu=new StringSelectMenuBuilder()
+          .setCustomId("ticket_builder_question_category")
+          .setPlaceholder("Choose which category gets the question")
+          .addOptions(p.categories.slice(0,25).map(c=>({
+            label:truncate(c.name||"Category",100),
+            value:String(c.id).slice(0,100),
+            description:truncate(`${(c.questions||[]).length}/5 questions configured`,100),
+            emoji:c.emoji||"🎫"
+          })));
+        return safeReply(interaction,{embeds:[infoEmbed("❓ Add Category Question","Select a ticket category first. The question will only appear for tickets opened under that category.")],components:[new ActionRowBuilder().addComponents(menu)],flags:MessageFlags.Ephemeral});
+      }
       if (interaction.customId === "ticket_builder_preview") return interaction.update(ticketPanelPayload(interaction.guildId));
       if (interaction.customId === "ticket_builder_claim" || interaction.customId === "ticket_builder_reason" || interaction.customId === "ticket_builder_transcript") {
         if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
@@ -3200,7 +3254,7 @@ async function handleInteraction(interaction) {
         if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const p=getGuildData(interaction.guildId).tickets.premium;
-        Object.assign(p,{panelTitle:"Vyne Support Center",panelDescription:"Need help? Open a private support ticket and our staff will assist you.",buttonLabel:"Create Ticket",buttonEmoji:"🎫",panelImage:null,categories:[{id:"general",name:"General Support",description:"General questions or support.",emoji:"🎫"}],questions:[],claimEnabled:true,closeReasonRequired:false,transcriptEnabled:true,autoCloseMs:0,maxOpenPerUser:1});
+        Object.assign(p,{panelTitle:"Vyne Support Center",panelDescription:"Need help? Open a private support ticket and our staff will assist you.",buttonLabel:"Create Ticket",buttonEmoji:"🎫",panelImage:null,categories:[{id:"general",name:"General Support",description:"General questions or support.",emoji:"🎫",questions:[]}],claimEnabled:true,closeReasonRequired:false,transcriptEnabled:true,autoCloseMs:0,maxOpenPerUser:1});
         getGuildData(interaction.guildId).tickets.advancedEnabled=false;
         writeJSON(FILES.config,db.config);
         return interaction.update(ticketBuilderPanel(interaction.guildId));
@@ -3337,8 +3391,10 @@ async function handleInteraction(interaction) {
 
       if (interaction.customId.startsWith("ticket_questions_")) {
         const categoryId=interaction.customId.slice("ticket_questions_".length);
-        const questions=getGuildData(interaction.guildId).tickets.premium.questions.slice(0,5);
-        const answers={}; questions.forEach((q,i)=>{answers[q.label]=interaction.fields.getTextInputValue(`question_${i}`);});
+        const cfg=getGuildData(interaction.guildId);
+         const category=cfg.tickets.premium.categories.find(c=>c.id===categoryId);
+         const questions=(category?.questions||[]).slice(0,5);
+         const answers={}; questions.forEach((q,i)=>{answers[q.label]=interaction.fields.getTextInputValue(`question_${i}`);});
         try { const ch=await createTicketChannel(interaction,categoryId,answers); return safeReply(interaction,{embeds:[success("Ticket created",`Your ticket is ${ch}.`)],flags:MessageFlags.Ephemeral}); }
         catch(err){ return safeReply(interaction,{embeds:[errorEmbed("Ticket creation failed",truncate(err?.message||err,1200))],flags:MessageFlags.Ephemeral}); }
       }
@@ -3359,15 +3415,23 @@ async function handleInteraction(interaction) {
         getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
         return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
       }
-      if (interaction.customId === "ticket_builder_question_modal") {
-        if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
-        if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
-        const p=getGuildData(interaction.guildId).tickets.premium; if(p.questions.length>=5) return safeReply(interaction,{embeds:[errorEmbed("Question limit","Discord modals support up to 5 ticket questions.")],flags:MessageFlags.Ephemeral});
-        const label=interaction.fields.getTextInputValue("question_label"); const placeholder=interaction.fields.getTextInputValue("question_placeholder")||"Type your answer..."; const required=!["no","false","0"].includes((interaction.fields.getTextInputValue("question_required")||"yes").toLowerCase());
-        p.questions.push({label,placeholder,required}); getGuildData(interaction.guildId).tickets.advancedEnabled=true; writeJSON(FILES.config,db.config);
-        return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
-      }
-      if (interaction.customId === "welcome_advanced_modal") {
+      if (interaction.customId.startsWith("ticket_builder_question_modal_")) {
+         if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
+         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+         const categoryId=interaction.customId.slice("ticket_builder_question_modal_".length);
+         const p=getGuildData(interaction.guildId).tickets.premium;
+         const category=p.categories.find(c=>c.id===categoryId);
+         if(!category) return safeReply(interaction,{embeds:[errorEmbed("Category not found","That ticket category no longer exists.")],flags:MessageFlags.Ephemeral});
+         if((category.questions||[]).length>=5) return safeReply(interaction,{embeds:[errorEmbed("Question limit","Each ticket category can have up to 5 questions.")],flags:MessageFlags.Ephemeral});
+         const label=interaction.fields.getTextInputValue("question_label").trim();
+         const placeholder=interaction.fields.getTextInputValue("question_placeholder").trim()||"Type your answer...";
+         const required=!["no","false","0"].includes((interaction.fields.getTextInputValue("question_required")||"yes").toLowerCase().trim());
+         category.questions.push({label,placeholder,required});
+         getGuildData(interaction.guildId).tickets.advancedEnabled=true;
+         writeJSON(FILES.config,db.config);
+         return safeReply(interaction,ticketBuilderPanel(interaction.guildId));
+       }
+       if (interaction.customId === "welcome_advanced_modal") {
         if(!premiumActive(interaction.user.id,interaction.guildId)) return requirePremium(interaction);
         if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
         const w=getGuildData(interaction.guildId).welcome; w.advanced=true; w.enabled=true;
@@ -3859,6 +3923,25 @@ client.once("clientReady", async readyClient => {
   });
 });
 
+function flushPersistentData() {
+  writeJSON(FILES.config, db.config);
+  writeJSON(FILES.tickets, db.tickets);
+  writeJSON(FILES.premium, db.premium);
+  writeJSON(FILES.noprefix, db.noprefix);
+  writeJSON(FILES.warnings, db.warnings);
+  writeJSON(FILES.cases, db.cases);
+  writeJSON(FILES.levels, db.levels);
+  writeJSON(FILES.economy, db.economy);
+  writeJSON(FILES.reminders, db.reminders);
+  writeJSON(FILES.giveaways, db.giveaways);
+  writeJSON(FILES.ai, db.ai);
+  writeJSON(FILES.notes, db.notes);
+  writeJSON(FILES.suggestions, db.suggestions);
+  writeJSON(FILES.botReports, db.botReports);
+  writeJSON(FILES.analytics, db.analytics);
+}
+process.on("SIGINT", () => { flushPersistentData(); process.exit(0); });
+process.on("SIGTERM", () => { flushPersistentData(); process.exit(0); });
 process.on("unhandledRejection", err => console.error("Unhandled rejection:", err));
 process.on("uncaughtException", err => console.error("Uncaught exception:", err));
 
