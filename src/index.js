@@ -4309,11 +4309,16 @@ client.once("clientReady", async readyClient => {
   if (!process.env.LAVALINK_PASSWORD) {
     console.warn("⚠️ LAVALINK_PASSWORD is not set; music commands will not connect to TripleN.");
   }
-  readyClient.lavalink.init({
-    id: readyClient.user.id,
-    username: readyClient.user.username,
-    shards: client.ws.totalShards
-  });
+  try {
+    await readyClient.lavalink.init({
+      id: readyClient.user.id,
+      username: readyClient.user.username,
+      shards: client.ws.totalShards
+    });
+    console.log("🎵 Lavalink manager initialized.");
+  } catch (err) {
+    console.error("❌ Lavalink initialization failed:", err?.message || err);
+  }
   console.log(`🎵 Lavalink: TripleN @ ${process.env.LAVALINK_HOST || "lavalink.nazha.online"}:${process.env.LAVALINK_PORT || "443"} (secure)`);
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
   console.log(`📌 Client ID: ${CLIENT_ID}`);
