@@ -594,12 +594,14 @@ async function renderNowPlayingCard(track, elapsed = 0, volume = 75, loop = "off
 
   // Artwork-driven background, kept deliberately subtle.
   if (thumbnail) {
+    // Keep the background intentionally simple and renderer-safe.
+    // Some @napi-rs/canvas builds can retain a blur filter after restore(),
+    // which makes the entire card text effectively invisible.
     ctx.save();
-    ctx.globalAlpha = 0.14;
-    ctx.filter = "blur(32px)";
-    ctx.drawImage(thumbnail, -80, -80, width + 160, height + 160);
+    ctx.globalAlpha = 0.12;
+    ctx.drawImage(thumbnail, 0, 0, width, height);
     ctx.restore();
-    ctx.fillStyle = "rgba(11,11,16,0.82)";
+    ctx.fillStyle = "rgba(11,11,16,0.88)";
     ctx.fillRect(0, 0, width, height);
   }
 
