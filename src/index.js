@@ -1293,146 +1293,183 @@ function helpPayload(page = "home") {
   const pages = {
     home: {
       title: "✦ Vyne Help Center",
-      desc: "Everything in Vyne, organized into quick-access categories. Use the menu below to explore.",
+      desc: "Select a category from the menu below to explore Vyne. Each page only shows the commands relevant to that category.",
       color: COLORS.primary,
       fields: [
-        { name: "🛡️ Moderation", value: "`/ban` · `/kick` · `/timeout` · `/warn` · `/purge` · `/lock` · `/role`", inline: false },
-        { name: "☢️ Security", value: "`/automod` · `/antinuke` · `/raid` · `/verify`", inline: false },
-        { name: "🎫 Community", value: "`/ticket` · `/welcome` · `/voicemaster` · `/giveaway` · `/poll` · `/report`", inline: false },
-        { name: "📊 Tools", value: "`/analytics` `/level` `/leaderboard` `/balance` `/daily` `/pay` `/remind`", inline: false },
-        { name: "◆ Premium", value: "Advanced customization and controls. Every Premium plan unlocks the same features; only duration changes.", inline: false },
-        { name: "⚡ No-Prefix", value: "Separate access system for running supported commands without a prefix.", inline: false }
+        { name: "🛡️ Moderation", value: "Punishments, warnings, cleanup, roles and channel controls.", inline: true },
+        { name: "🔐 Security", value: "AutoMod, Anti-Nuke, raid protection and verification.", inline: true },
+        { name: "🎫 Tickets", value: "Ticket setup, panels and support workflows.", inline: true },
+        { name: "👋 Welcome", value: "Welcome messages and Premium onboarding.", inline: true },
+        { name: "🎙️ VoiceMaster", value: "Temporary private voice rooms • Premium.", inline: true },
+        { name: "📊 Analytics", value: "Server activity, levels and leaderboards.", inline: true },
+        { name: "🎉 Community", value: "Giveaways, polls, notifications and reports.", inline: true },
+        { name: "🤖 AI", value: "Vyne AI and AI configuration.", inline: true },
+        { name: "◆ Premium", value: "Premium plans and Premium-only features.", inline: true },
+        { name: "⚡ No-Prefix", value: "Separate No-Prefix access system.", inline: true },
+        { name: "⚙️ System", value: "Owner-only deployment and configuration tools.", inline: true }
       ]
     },
     moderation: {
       title: "🛡️ Moderation",
-      desc: "Punishments, warnings, cleanup and role management.",
+      desc: "Everything for day-to-day server moderation.",
       color: COLORS.danger,
       fields: [
         { name: "Punishments", value: "`/ban` `/unban` `/kick` `/timeout` `/untimeout` `/mute` `/unmute` `/softban`", inline: false },
         { name: "Warnings", value: "`/warn` `/warnings` `/clearwarnings`", inline: false },
         { name: "Channels", value: "`/purge` `/lock` `/unlock` `/slowmode`", inline: false },
-        { name: "Roles", value: "`/role add` `/role remove` `/role create` `/nick`", inline: false }
+        { name: "Members & Roles", value: "`/nick` `/role add` `/role remove` `/role create`", inline: false },
+        { name: "User Information", value: "`/userinfo` `/avatar` `/permissions` `/joininfo`", inline: false }
       ]
     },
     security: {
-      title: "☢️ Security",
-      desc: "Layered protection for everyday moderation and advanced server defense.",
+      title: "🔐 Security",
+      desc: "Protect your server from spam, raids and destructive actions.",
       color: COLORS.danger,
       fields: [
-        { name: "AutoMod", value: "`/automod` — basic controls\n`/automodpro` — thresholds, blocked words and domains • 💎 Premium", inline: false },
-        { name: "Anti-Nuke", value: "`/antinuke` — interactive setup panel\nAdvanced rules, thresholds and controls are marked 💎 Premium", inline: false },
-        { name: "Raid", value: "`/raid on` `/raid off` `/raid status`", inline: false },
+        { name: "AutoMod", value: "`/automod` — configure basic protection\n`/automodpro` — advanced thresholds, words and domains • ◆ Premium", inline: false },
+        { name: "Anti-Nuke", value: "`/antinuke` — interactive protection panel with destructive-action rules and lockdown.", inline: false },
+        { name: "Raid Protection", value: "`/raid on` `/raid off` `/raid status`", inline: false },
         { name: "Verification", value: "`/verify setup` `/verify disable`", inline: false }
       ]
     },
     tickets: {
       title: "🎫 Tickets",
-      desc: "A free ready-made ticket system plus a full Premium customization layer.",
+      desc: "Create a support system for your server.",
       color: COLORS.primary,
       fields: [
-        { name: "Free", value: "`/ticket setup` → staff role\n`/ticket panel` → pre-made panel\n`/ticket close` → close ticket", inline: false },
-        { name: "◆ Premium", value: "`/ticket builder` → custom panel, categories, questions, claim, close reason, transcripts, limits and more • 💎 Premium", inline: false }
+        { name: "Setup", value: "`/ticket setup` — configure the ticket category and staff role.", inline: false },
+        { name: "Panel", value: "`/ticket panel` — send the ready-made ticket panel.", inline: false },
+        { name: "Ticket Controls", value: "`/ticket close` and the available ticket management controls.", inline: false },
+        { name: "◆ Premium Builder", value: "`/ticket builder` — custom panel, categories, questions, claims, close reasons, transcripts and limits.", inline: false }
       ]
     },
     welcome: {
       title: "👋 Welcome",
-      desc: "Simple free welcomes or a fully customized Premium onboarding experience.",
+      desc: "Welcome new members with simple or advanced onboarding.",
       color: COLORS.success,
       fields: [
-        { name: "Free", value: "`/welcome setup` and `/welcome disable`", inline: false },
-        { name: "◆ Premium", value: "`/welcome advanced` and `/welcome preview` • custom message, title, image, color and auto-delete", inline: false }
+        { name: "Free", value: "`/welcome setup` — choose a channel and message.\n`/welcome disable` — turn welcomes off.", inline: false },
+        { name: "◆ Premium", value: "`/welcome advanced` — customize title, message, image, color, auto-role and auto-delete.\n`/welcome preview` — preview the configured welcome.", inline: false }
       ]
     },
     voicemaster: {
       title: "🎙️ VoiceMaster",
-      desc: "Temporary personal voice channels with owner controls • 💎 Premium.",
+      desc: "Premium temporary voice rooms with owner controls.",
       color: COLORS.cyan,
       fields: [
-        { name: "Setup", value: "`/voicemaster setup` and `/voicemaster panel` • 💎 Premium", inline: false },
-        { name: "Controls", value: "`/voicemaster rename` `/limit` `/lock` `/unlock` `/claim` `/delete` • 💎 Premium", inline: false }
+        { name: "Setup", value: "`/voicemaster setup` `/voicemaster panel`", inline: false },
+        { name: "Room Controls", value: "`/voicemaster rename` `/voicemaster limit` `/voicemaster lock` `/voicemaster unlock` `/voicemaster claim` `/voicemaster delete`", inline: false },
+        { name: "How it works", value: "Join the configured hub and Vyne creates a temporary room for you automatically.", inline: false }
       ]
     },
     analytics: {
-      title: "📊 Analytics",
-      desc: "Server activity and moderation insights • 💎 Premium.",
+      title: "📊 Analytics & Levels",
+      desc: "Server activity and community progression.",
       color: COLORS.info,
       fields: [
-        { name: "Analytics", value: "`/analytics` • messages, commands, joins, leaves, cases, warnings, members and channels • 💎 Premium", inline: false },
-        { name: "Levels", value: "`/level` `/leaderboard`", inline: false }
+        { name: "Analytics • ◆ Premium", value: "`/analytics` — messages, commands, joins, leaves, cases, warnings, members and channels.", inline: false },
+        { name: "Levels", value: "`/level` — view a member's level and XP.\n`/leaderboard` — view the server XP leaderboard.", inline: false },
+        { name: "Economy", value: "`/balance` `/daily` `/pay`", inline: false }
       ]
     },
     community: {
       title: "🎉 Community",
-      desc: "Engagement and server utility features.",
+      desc: "Engagement, utilities and member reporting.",
       color: COLORS.cyan,
       fields: [
-        { name: "Tickets & Welcome", value: "`/ticket` and `/welcome`", inline: false },
         { name: "Giveaways", value: "`/giveaway start` `/giveaway end` `/giveaway reroll`", inline: false },
-        { name: "Polls", value: "`/poll`", inline: false },
-        { name: "Notifications", value: "`/notify set` `/notify test`\nYouTube/Reddit feeds • 💎 Premium", inline: false },
-        { name: "Reports", value: "`/report @user reason` → sends a private report to the configured staff log channel.", inline: false }
+        { name: "Polls", value: "`/poll` — create a reaction-based poll.", inline: false },
+        { name: "Notifications", value: "`/notify set` `/notify test` plus YouTube/Reddit feeds • ◆ Premium", inline: false },
+        { name: "Reports", value: "`/report @user reason` — privately sends a member report to the configured staff log channel.", inline: false },
+        { name: "Reminders", value: "`/remind 10m message` — create a personal server reminder.", inline: false }
       ]
     },
     ai: {
       title: "🤖 Vyne AI",
-      desc: "Optional Gemini-powered assistant.",
+      desc: "Optional Gemini-powered Discord assistant.",
       color: COLORS.primary,
       fields: [
-        { name: "Ask", value: "`/ask <prompt>`", inline: false },
-        { name: "Control", value: "`/ai enable` `/ai disable` `/ai status` `/ai clear`", inline: false }
+        { name: "Ask Vyne", value: "`/ask <prompt>` — ask Vyne AI a question.", inline: false },
+        { name: "AI Controls", value: "`/ai enable` `/ai disable` `/ai status` `/ai clear`", inline: false },
+        { name: "Note", value: "AI must be configured with a Gemini API key on the bot host.", inline: false }
       ]
     },
     premium: {
       title: "◆ Vyne Premium",
-      desc: "Every Premium plan has the same complete feature access. Only subscription duration changes.",
+      desc: "One complete Premium feature set. Plans only change the duration.",
       color: COLORS.primary,
       fields: [
-        { name: "Plans", value: "🥉 7 Days • 🥈 30 Days • 🥇 90 Days • 💎 1 Year • ♾️ Lifetime", inline: false },
-        { name: "Features", value: "Custom tickets, advanced welcome, AutoMod Pro, Anti-Nuke advanced controls, VoiceMaster, analytics and feed notifications.", inline: false },
-        { name: "Owner controls", value: "`/premium user add` and `/premium server add` open a plan dropdown. Only the configured Vyne owner can manage subscriptions.", inline: false }
+        { name: "Plans", value: "🥉 7 Days  •  🥈 30 Days  •  🥇 90 Days  •  💎 1 Year  •  ♾️ Lifetime", inline: false },
+        { name: "Features", value: "Advanced tickets • Advanced welcome • AutoMod Pro • Anti-Nuke advanced controls • VoiceMaster • Analytics • Premium notification feeds", inline: false },
+        { name: "Owner Management", value: "`/premium user add` and `/premium server add` open a duration dropdown. Only the configured Vyne owner can grant or revoke access.", inline: false }
       ]
     },
     noprefix: {
       title: "⚡ No-Prefix",
-      desc: "Completely separate from Premium.",
+      desc: "A completely separate access system from Premium.",
       color: COLORS.warning,
       fields: [
-        { name: "Plans", value: "⚡ 7 Days • ⚡ 30 Days • ⚡ 90 Days • ⚡ 1 Year • ♾️ Lifetime", inline: false },
-        { name: "Usage", value: "Granted users/servers can run supported commands without a prefix.", inline: false },
-        { name: "Management", value: "`/noprefix user add` and `/noprefix server add` open a duration dropdown. Owner only.", inline: false }
+        { name: "Plans", value: "⚡ 7 Days  •  ⚡ 30 Days  •  ⚡ 90 Days  •  ⚡ 1 Year  •  ♾️ Lifetime", inline: false },
+        { name: "Usage", value: "Users or servers with No-Prefix access can use supported commands without the normal prefix.", inline: false },
+        { name: "Owner Management", value: "`/noprefix user add` and `/noprefix server add` open a duration dropdown. Owner only.", inline: false }
       ]
     },
     system: {
       title: "⚙️ System",
-      desc: "Owner-only deployment controls.",
+      desc: "Owner-only deployment and server configuration tools.",
       color: COLORS.dark,
       fields: [
-        { name: "Hosting", value: "`/sys status` `/sys info` `/sys diagnose` `/sys logs`", inline: false },
-        { name: "Deployment", value: "`/sys pull` and `/sys restart` send an immediate acknowledgement before contacting Bot-Hosting.", inline: false },
-        { name: "Config", value: "`/config` `/logchannel` `/modrole`", inline: false }
+        { name: "Deployment", value: "`/sys status` `/sys info` `/sys diagnose` `/sys logs`", inline: false },
+        { name: "Update & Restart", value: "`/sys pull` — sync the latest GitHub code.\n`/sys restart` — restart the deployment.", inline: false },
+        { name: "Configuration", value: "`/config` `/logchannel` `/modrole`", inline: false }
       ]
     }
   };
 
+  const categories = [
+    ["home", "Overview", "✦", "All Vyne categories"],
+    ["moderation", "Moderation", "🛡️", "Punishments and server management"],
+    ["security", "Security", "🔐", "AutoMod, Anti-Nuke and raid protection"],
+    ["tickets", "Tickets", "🎫", "Support ticket system"],
+    ["welcome", "Welcome", "👋", "Member onboarding"],
+    ["voicemaster", "VoiceMaster", "🎙️", "Temporary voice rooms"],
+    ["analytics", "Analytics", "📊", "Analytics, levels and economy"],
+    ["community", "Community", "🎉", "Giveaways, polls and reports"],
+    ["ai", "AI", "🤖", "Vyne AI controls"],
+    ["premium", "Premium", "◆", "Premium features and plans"],
+    ["noprefix", "No-Prefix", "⚡", "No-Prefix access"],
+    ["system", "System", "⚙️", "Owner-only system tools"]
+  ];
+
   const p = pages[page] || pages.home;
-  const e = embed(p.title, p.desc, p.color).addFields(p.fields);
-  const menu = new StringSelectMenuBuilder().setCustomId("vyne_help").setPlaceholder("Explore a Vyne category").addOptions([
-    { label: "Overview", value: "home", emoji: "✦" },
-    { label: "Moderation", value: "moderation", emoji: "🛡️" },
-    { label: "Security", value: "security", emoji: "☢️" },
-    { label: "Tickets", value: "tickets", emoji: "🎫" },
-    { label: "Welcome", value: "welcome", emoji: "👋" },
-    { label: "VoiceMaster", value: "voicemaster", emoji: "🎙️" },
-    { label: "Analytics", value: "analytics", emoji: "📊" },
-    { label: "Community", value: "community", emoji: "🎉" },
-    { label: "AI", value: "ai", emoji: "🤖" },
-    { label: "Premium", value: "premium", emoji: "◆" },
-    { label: "No-Prefix", value: "noprefix", emoji: "⚡" },
-    { label: "System", value: "system", emoji: "⚙️" }
-  ]);
-  const back = new ButtonBuilder().setCustomId("vyne_help_back").setLabel("Back to Overview").setEmoji("↩️").setStyle(ButtonStyle.Secondary).setDisabled(page === "home");
-  return { embeds: [e], components: [new ActionRowBuilder().addComponents(menu), new ActionRowBuilder().addComponents(back)] };
+  const e = embed(p.title, p.desc, p.color)
+    .setFooter({ text: `Vyne Help • Category: ${p.title.replace(/^\S+\s*/, "")}` })
+    .addFields(p.fields);
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("vyne_help")
+    .setPlaceholder(page === "home" ? "Select a help category…" : "Switch help category…")
+    .addOptions(categories.map(([value, label, emoji, description]) => ({
+      label,
+      value,
+      emoji,
+      description
+    })));
+
+  const back = new ButtonBuilder()
+    .setCustomId("vyne_help_back")
+    .setLabel("Back to Overview")
+    .setEmoji("↩️")
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(page === "home");
+
+  return {
+    embeds: [e],
+    components: [
+      new ActionRowBuilder().addComponents(menu),
+      new ActionRowBuilder().addComponents(back)
+    ]
+  };
 }
 
 async function sendHelp(interaction, page = "home") {
