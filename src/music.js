@@ -448,6 +448,12 @@ function setupLavalink(client) {
       return;
     }
     if (session.advancing) return;
+
+    // Clear the old now-playing message reference before advancing. The next
+    // track's startCurrent() will render the same message with its new details.
+    if (session.current && session.nowPlayingMessage) {
+      session.lastCardSecond = null;
+    }
     const endedId = track?.info?.identifier || track?.encoded;
     const currentId = session.current?.id || session.current?.lavaTrack?.info?.identifier || session.current?.lavaTrack?.encoded;
     if (endedId && currentId && endedId !== currentId) return;
@@ -898,17 +904,3 @@ async function handleMusicCommand(interaction, premiumActive) {
     session.suppressNextEnd = true;
     const player = session.player;
     await player.stopPlaying(false, false).catch(err => {
-      session.suppressNextEnd = false;
-      throw err;
-    });
-    await advance(client, guildId, "skipped");
-
-    // 24/7 is a hard stay-connected guarantee. If Lavalink dropped the player
-    // during the transition, immediately recreate the voice connection.
-    if (settings.always247 && session.voiceChannelId) {
-      const livePlayer = getPlayer(client, guildId) || session.player;
-      if (!livePlayer?.connected) {
-        const guild = client.guilds.cache.get(guildId);
-        const channel = guild?.channels.cache.get(session.voiceChannelId);
-        if (guild && channel) {
-          await connectToChannel(client, guild, channel).catch(err => {
