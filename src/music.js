@@ -543,43 +543,76 @@ function fitText(ctx, text, maxWidth) {
   return value + "…";
 }
 
-function artworkFallbackUrl(track) {
-  if (!track) return null;
-  if (track.artworkUrl) return track.artworkUrl;
-  const source = String(track.lavaTrack?.info?.sourceName || "").toLowerCase();
-  const identifier = String(track.lavaTrack?.info?.identifier || track.id || "");
-  if (source === "youtube" && /^[A-Za-z0-9_-]{11}$/.test(identifier)) {
-    return `https://i.ytimg.com/vi/${identifier}/hqdefault.jpg`;
+function artworkCandidateUrls(track) {
+  if (!track) return [];
+
+  const candidates = [];
+  const add = value => {
+    const url = String(value || "").trim();
+    if (url && /^https?:\\/\\//i.test(url) && !candidates.includes(url)) candidates.push(url);
+  };
+
+  // Prefer Lavalink/plugin artwork, but keep trying the YouTube thumbnail if
+  // a node/plugin returns an unavailable artwork URL.
+  add(track.artworkUrl);
+  add(track.thumbnail);
+  add(track.lavaTrack?.info?.artworkUrl);
+  add(track.lavaTrack?.pluginInfo?.artworkUrl);
+  add(track.lavaTrack?.info?.thumbnail);
+  add(track.lavaTrack?.pluginInfo?.albumArtUrl);
+
+  const source = String(track.lavaTrack?.info?.sourceName || track.source || "").toLowerCase();
+  const rawIdentifier = String(track.lavaTrack?.info?.identifier || track.id || "").trim();
+  let youtubeId = /^[A-Za-z0-9_-]{11}$/.test(rawIdentifier) ? rawIdentifier : "";
+
+  if (!youtubeId) {
+    const uri = String(track.lavaTrack?.info?.uri || track.url || "");
+    const match = uri.match(/[?&]v=([A-Za-z0-9_-]{11})/) || uri.match(/youtu\\.be\\/([A-Za-z0-9_-]{11})/);
+    youtubeId = match?.[1] || "";
   }
-  return null;
+
+  if (source === "youtube" && youtubeId) {
+    add(`https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`);
+    add(`https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`);
+  }
+
+  return candidates;
 }
 
 async function getArtworkImage(track) {
-  const url = artworkFallbackUrl(track);
-  if (!url) return null;
-  if (artworkCache.has(url)) return artworkCache.get(url);
+  const urls = artworkCandidateUrls(track);
+  if (!urls.length) return null;
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+  for (const url of urls) {
+    if (artworkCache.has(url)) return artworkCache.get(url);
+
     try {
-      const response = await fetch(url, { signal: controller.signal });
-      if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const image = await loadImage(buffer);
-      artworkCache.set(url, image);
-      while (artworkCache.size > ARTWORK_CACHE_LIMIT) {
-        const firstKey = artworkCache.keys().next().value;
-        artworkCache.delete(firstKey);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { "User-Agent": "Mozilla/5.0 VyneMusic/1.0" }
+        });
+        if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const image = await loadImage(buffer);
+        artworkCache.set(url, image);
+        while (artworkCache.size > ARTWORK_CACHE_LIMIT) {
+          const firstKey = artworkCache.keys().next().value;
+          artworkCache.delete(firstKey);
+        }
+        return image;
+      } finally {
+        clearTimeout(timer);
       }
-      return image;
-    } finally {
-      clearTimeout(timer);
+    } catch {
+      // Try the next artwork source instead of silently giving up after the
+      // first Lavalink/plugin URL fails.
     }
-
-  } catch {
-    return null;
   }
+
+  return null;
 }
 
 async function renderNowPlayingCard(track, elapsed = 0, volume = 75, loop = "off") {
