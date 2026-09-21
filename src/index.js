@@ -1411,7 +1411,18 @@ function helpPayload(page = "home") {
 }
 
 async function sendHelp(interaction, page = "home") {
-  return safeReply(interaction, helpPayload(page));
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferReply();
+    }
+    return interaction.editReply(helpPayload(page));
+  } catch (err) {
+    console.error("Help panel error:", err?.stack || err);
+    return safeReply(interaction, {
+      embeds: [errorEmbed("Help panel failed", "Vyne could not open the help panel. Check the bot logs for the exact error.")],
+      flags: MessageFlags.Ephemeral
+    });
+  }
 }
 
 function automodPanel(guildId) {
@@ -2077,7 +2088,7 @@ async function handleModeration(interaction) {
     const deletable = selected.filter(m => Date.now() - m.createdTimestamp < 14 * 86400000);
     if (!deletable.length) return safeReply(interaction, { embeds: [errorEmbed("Nothing to delete", "No eligible messages were found.")], flags: MessageFlags.Ephemeral });
     await interaction.channel.bulkDelete(deletable, true);
-    return safeReply(interaction, { embeds: [success("Messages purged", `Deleted **${deletable.size}** messages.`)] });
+    return safeReply(interaction, { embeds: [success("Messages purged", `Deleted **${deletable.length}** messages.`)] });
   }
 
   if (command === "lock" || command === "unlock") {
