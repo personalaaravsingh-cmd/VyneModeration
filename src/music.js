@@ -73,7 +73,8 @@ function sessionFor(guildId) {
     nowPlayingMessage: null,
     cardTimer: null,
     lastCardSecond: null,
-    client: null
+    client: null,
+    suppressNextEnd: false
   };
   sessions.set(guildId, session);
   return session;
@@ -195,7 +196,7 @@ async function connectToChannel(client, guild, channel) {
       textChannelId: null,
       selfDeaf: true,
       selfMute: false,
-      node: "TripleN",
+      node: process.env.LAVALINK_ID || "TripleN",
       volume: session.volume
     });
   } else if (player.voiceChannelId !== channel.id) {
@@ -348,6 +349,10 @@ function setupLavalink(client) {
     if (!player?.guildId) return;
     const session = sessions.get(player.guildId);
     if (!session || session.advancing) return;
+    if (session.suppressNextEnd) {
+      session.suppressNextEnd = false;
+      return;
+    }
     void advance(client, player.guildId, "finished");
   });
 
@@ -611,7 +616,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     const query = interaction.options.getString("query", true);
     const existing = getPlayer(client, guildId);
     if (existing?.voiceChannelId && existing.voiceChannelId !== channel.id) {
-      return interaction.editReply(payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${existing.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning));
+      return payloadEmbed("🎵 Already playing elsewhere", `Vyne is already connected to <#${existing.voiceChannelId}>. Join that channel or use \`/music disconnect\` first.`, COLORS.warning));
     }
 
     await connectToChannel(client, interaction.guild, channel);
@@ -619,10 +624,10 @@ async function handleMusicCommand(interaction, premiumActive) {
 
     if (session.current) {
       if (settings.fairplay && queuePositionFor(session, interaction.user.id) >= 2) {
-        return interaction.editReply(payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning));
+        return payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning));
       }
       session.queue.push(track);
-      return interaction.editReply(payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success));
+      return payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success));
     }
 
     await startCurrent(client, guildId, track);
@@ -645,12 +650,14 @@ async function handleMusicCommand(interaction, premiumActive) {
 
   if (sub === "skip") {
     if (!session.current || !session.player) throw new Error("Nothing is currently playing.");
+    session.suppressNextEnd = true;
     await session.player.stopPlaying(false, false);
     await advance(client, guildId, "skipped");
     return payloadEmbed("⏭️ Skipped", session.current ? `Now playing **${session.current.title}**.` : "The queue is empty.");
   }
 
   if (sub === "stop") {
+    session.suppressNextEnd = true;
     if (session.player) await session.player.stopPlaying(true, false).catch(() => {});
     session.queue = [];
     session.current = null;
