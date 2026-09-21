@@ -624,10 +624,10 @@ async function handleMusicCommand(interaction, premiumActive) {
 
     if (session.current) {
       if (settings.fairplay && queuePositionFor(session, interaction.user.id) >= 2) {
-        return payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning));
+        return payloadEmbed("⚖️ Fair Play", "You already have two tracks waiting in the queue. Let other listeners have a turn.", COLORS.warning);
       }
       session.queue.push(track);
-      return payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success));
+      return payloadEmbed("➕ Added to queue", `${trackLine(track)}\\n\\nPosition: **#${session.queue.length}**`, COLORS.success);
     }
 
     await startCurrent(client, guildId, track);
