@@ -319,9 +319,10 @@ async function startCurrent(client, guildId, track, seekSeconds = 0) {
   return settings;
 }
 
-async function autoplayTrack(client, guildId) {
+async function autoplayTrack(client, guildId, sourceTrack = null) {
   const session = sessionFor(guildId);
-  const current = session.current;
+  // Capture the track that just ended/skipped before advance() clears session.current.
+  const current = sourceTrack || session.current;
   const player = getPlayer(client, guildId) || session.player;
   if (!current || !player) return null;
 
@@ -377,12 +378,13 @@ async function advance(client, guildId, reason = "finished") {
       session.queue.push({ ...session.current });
     }
 
+    const previousTrack = session.current;
     session.current = null;
     let next = selectNext(session, settings);
 
     if (!next && settings.autoplay) {
       try {
-        next = await autoplayTrack(client, guildId);
+        next = await autoplayTrack(client, guildId, previousTrack);
       } catch (err) {
         console.error(`[Music:${guildId}] autoplay error:`, err?.message || err);
       }
@@ -398,7 +400,7 @@ async function advance(client, guildId, reason = "finished") {
         next = selectNext(session, settings);
         if (!next && settings.autoplay) {
           try {
-            next = await autoplayTrack(client, guildId);
+            next = await autoplayTrack(client, guildId, previousTrack);
           } catch (autoplayErr) {
             console.error(`[Music:${guildId}] autoplay error:`, autoplayErr?.message || autoplayErr);
           }
