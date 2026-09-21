@@ -1269,12 +1269,12 @@ function helpPayload(page = "home") {
   const pages = {
     home: {
       title: "✦ Vyne Help Center",
-      desc: "A clean, friendly control center for moderation, security and community tools.",
+      desc: "Everything in Vyne, organized into quick-access categories. Use the menu below to explore.",
       color: COLORS.primary,
       fields: [
-        { name: "🛡️ Moderation", value: "`/ban` `/kick` `/timeout` `/warn` `/purge` `/lock` `/role`", inline: false },
-        { name: "☢️ Security", value: "`/automod` `/antinuke` `/raid` `/verify`", inline: false },
-        { name: "🎫 Community", value: "`/ticket` `/welcome` `/voicemaster` `/giveaway` `/poll`", inline: false },
+        { name: "🛡️ Moderation", value: "`/ban` · `/kick` · `/timeout` · `/warn` · `/purge` · `/lock` · `/role`", inline: false },
+        { name: "☢️ Security", value: "`/automod` · `/antinuke` · `/raid` · `/verify`", inline: false },
+        { name: "🎫 Community", value: "`/ticket` · `/welcome` · `/voicemaster` · `/giveaway` · `/poll`", inline: false },
         { name: "📊 Tools", value: "`/analytics` `/level` `/leaderboard` `/balance` `/daily` `/pay` `/remind`", inline: false },
         { name: "◆ Premium", value: "Advanced customization and controls. Every Premium plan unlocks the same features; only duration changes.", inline: false },
         { name: "⚡ No-Prefix", value: "Separate access system for running supported commands without a prefix.", inline: false }
@@ -1513,26 +1513,59 @@ function antinukeWhitelistIncludes(guild, executorId) {
   return Boolean(member && member.roles.cache.some(r => cfg.whitelistRoleIds.includes(r.id)));
 }
 
-async function enableLockdown(guild, reason = "Vyne emergency lockdown") {
+async function setLockdown(guild, enabled, reason = "Vyne emergency lockdown") {
   const cfg = getGuildData(guild.id);
-  cfg.raid.lockdown = true;
+  cfg.raid.lockdown = enabled;
   writeJSON(FILES.config, db.config);
-  const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText);
-  await Promise.all([...channels.values()].map(ch =>
-    ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }, { reason }).catch(() => {})
-  ));
-  await logAction(guild, "🚨 Emergency lockdown", "Vyne locked text channels to stop further damage.", COLORS.danger);
+
+  const channelTypes = new Set([
+    ChannelType.GuildText,
+    ChannelType.GuildAnnouncement,
+    ChannelType.GuildForum,
+    ChannelType.GuildMedia
+  ]);
+
+  const channels = guild.channels.cache.filter(
+    ch => channelTypes.has(ch.type) && ch.permissionOverwrites?.edit
+  );
+
+  const results = await Promise.all(
+    [...channels.values()].map(async ch => {
+      try {
+        await ch.permissionOverwrites.edit(
+          guild.roles.everyone,
+          { SendMessages: enabled ? false : null },
+          { reason: enabled ? reason : "Vyne lockdown disabled" }
+        );
+        return true;
+      } catch (err) {
+        console.error(`Lockdown ${enabled ? "lock" : "unlock"} failed for #${ch.name}:`, err?.message || err);
+        return false;
+      }
+    })
+  );
+
+  const changed = results.filter(Boolean).length;
+  const skipped = results.length - changed;
+
+  await logAction(
+    guild,
+    enabled ? "🚨 Emergency lockdown" : "🔓 Lockdown disabled",
+    enabled
+      ? `Vyne locked **${changed}** channel(s).${skipped ? ` ${skipped} channel(s) could not be locked.` : ""}`
+      : `Vyne restored sending permissions in **${changed}** channel(s).${skipped ? ` ${skipped} channel(s) could not be updated.` : ""}`,
+    enabled ? COLORS.danger : COLORS.success
+  );
+
+  return { changed, skipped };
+}
+
+async function enableLockdown(guild, reason = "Vyne emergency lockdown") {
+  return setLockdown(guild, true, reason);
 }
 
 async function disableLockdown(guild) {
-  const cfg = getGuildData(guild.id);
-  cfg.raid.lockdown = false;
-  writeJSON(FILES.config, db.config);
-  const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText);
-  await Promise.all([...channels.values()].map(ch =>
-    ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null }, { reason: "Vyne lockdown disabled" }).catch(() => {})
-  ));
-  await logAction(guild, "🔓 Lockdown disabled", "Vyne restored normal text-channel sending permissions where possible.", COLORS.success);
+  return setLockdown(guild, false);
 }
 
 async function applyAntinukeAction(guild, executorId, eventKey, entry) {
@@ -2668,7 +2701,21 @@ async function handleInteraction(interaction) {
     }
 
     if(command==="help") return sendHelp(interaction,"home");
-    if(command==="ping") return safeReply(interaction,{embeds:[embed("🏓 Pong",`WebSocket latency: **${client.ws.ping}ms**\nResponse: **Online**`,COLORS.success)]});
+    if (command === "ping") {
+      const responseStarted = Date.now();
+      const wsLatency = client.ws.ping;
+      return safeReply(interaction, {
+        embeds: [
+          embed(
+            "🏓 Pong",
+            `**Bot latency:** ${wsLatency}ms
+**Response time:** ${Date.now() - responseStarted}ms
+**Status:** 🟢 Online`,
+            COLORS.success
+          )
+        ]
+      });
+    }
     if(command==="botstats"){await deferOnce(interaction);return interaction.editReply(await botStatsEmbed());}
 
     if(command==="userinfo"){const u=interaction.options.getUser("user"),m=await interaction.guild.members.fetch(u.id).catch(()=>null);return safeReply(interaction,{embeds:[embed(`👤 ${u.tag}`,"User information.",COLORS.info).setThumbnail(u.displayAvatarURL({size:256})).addFields({name:"ID",value:`\`${u.id}\``,inline:true},{name:"Created",value:`<t:${Math.floor(u.createdTimestamp/1000)}:F>`,inline:true},{name:"Joined",value:m?`<t:${Math.floor(m.joinedTimestamp/1000)}:F>`:"Not in server",inline:true},{name:"Bot",value:u.bot?"Yes":"No",inline:true})]});}
