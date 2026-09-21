@@ -1377,6 +1377,7 @@ function voiceMasterMemberModal(customId, title, label, placeholder) {
 
 const commands = [
   new SlashCommandBuilder().setName("help").setDescription("Open Vyne's clean interactive help center."),
+  new SlashCommandBuilder().setName("about").setDescription("Learn about Vyne and open official links."),
   new SlashCommandBuilder().setName("ping").setDescription("Check Vyne's latency."),
   new SlashCommandBuilder().setName("botstats").setDescription("View Vyne bot, process and hosting statistics."),
   new SlashCommandBuilder().setName("ask").setDescription("Ask Vyne AI a question.")
@@ -2997,7 +2998,7 @@ async function handleInteraction(interaction) {
       // must open a modal as its initial interaction response.
       console.log(`📨 Interaction received: /${interaction.commandName}`);
       await interaction.deferReply({
-        flags: interaction.commandName === "help" ? undefined : MessageFlags.Ephemeral
+        flags: ["help", "about"].includes(interaction.commandName) ? undefined : MessageFlags.Ephemeral
       });
     }
 
@@ -3509,6 +3510,45 @@ async function handleInteraction(interaction) {
     }
 
     if(command==="help") return sendHelp(interaction,"home");
+    if(command==="about"){
+      const e = embed("◆ VYNE",
+        "Vyne is a modern Discord moderation & security bot built to keep your server protected, organized, and powerful.\n\n" +
+        "**🛡️ Moderation**\nAdvanced moderation, warnings, case management and server utilities.\n\n" +
+        "**🔐 Security**\nAnti-Nuke, verification, permission protection and security tools.\n\n" +
+        "**🎫 Server Tools**\nAdvanced tickets, category-based questions, VoiceMaster and analytics.\n\n" +
+        "**💎 Premium**\nPremium-only features, VoiceMaster and advanced server tools.\n\n" +
+        "**⚡ No-Prefix**\nUse supported Vyne commands without typing the configured prefix.\n\n" +
+        "**💜 Built with performance, security & simplicity in mind.**\n\n**Developed by Pauze**", COLORS.primary);
+      e.addFields(
+        { name: "🌐 Website", value: "[Open Website](https://vyne-eta.vercel.app/)", inline: true },
+        { name: "📖 Commands", value: "[View Commands](https://vyne-eta.vercel.app/commands)", inline: true },
+        { name: "💎 Premium", value: "[View Premium](https://vyne-eta.vercel.app/premium)", inline: true },
+        { name: "⚡ No-Prefix", value: "[View No-Prefix](https://vyne-eta.vercel.app/no-prefix)", inline: true },
+        { name: "👤 About", value: "[About Vyne](https://vyne-eta.vercel.app/about)", inline: true },
+        { name: "🎫 Support", value: "[Support Center](https://vyne-eta.vercel.app/support)", inline: true },
+        { name: "🤖 Invite", value: "[Add Vyne](https://discord.com/oauth2/authorize?client_id=1550602608392151100)", inline: true },
+        { name: "📜 Terms", value: "[Terms of Service](https://vyne-eta.vercel.app/terms)", inline: true },
+        { name: "🔒 Privacy", value: "[Privacy Policy](https://vyne-eta.vercel.app/privacy)", inline: true },
+        { name: "📋 Rules", value: "[Vyne Rules](https://vyne-eta.vercel.app/rules)", inline: true }
+      );
+      const rows = [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel("Website").setEmoji("🌐").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/"),
+          new ButtonBuilder().setLabel("Commands").setEmoji("📖").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/commands"),
+          new ButtonBuilder().setLabel("Premium").setEmoji("💎").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/premium"),
+          new ButtonBuilder().setLabel("No-Prefix").setEmoji("⚡").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/no-prefix"),
+          new ButtonBuilder().setLabel("About").setEmoji("👤").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/about")
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel("Support").setEmoji("🎫").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/support"),
+          new ButtonBuilder().setLabel("Invite").setEmoji("🤖").setStyle(ButtonStyle.Link).setURL("https://discord.com/oauth2/authorize?client_id=1550602608392151100"),
+          new ButtonBuilder().setLabel("Terms").setEmoji("📜").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/terms"),
+          new ButtonBuilder().setLabel("Privacy").setEmoji("🔒").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/privacy"),
+          new ButtonBuilder().setLabel("Rules").setEmoji("📋").setStyle(ButtonStyle.Link).setURL("https://vyne-eta.vercel.app/rules")
+        )
+      ];
+      return safeReply(interaction, { embeds: [e], components: rows });
+    }
     if (command === "ping") {
       const responseStarted = Date.now();
       const wsLatency = client.ws.ping;
