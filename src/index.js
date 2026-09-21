@@ -985,42 +985,61 @@ function aiStatusEmbed(guildId) {
 }
 
 async function handleAICommand(interaction) {
-  const cfg = getAIConfig(interaction.guildId);
-  const prompt = interaction.options.getString("prompt");
-  const now = Date.now();
-  const key = `ai:${interaction.guildId}:${interaction.user.id}`;
-  const last = cooldowns.get(key) || 0;
-
-  if (now - last < cfg.cooldownMs) {
-    const remaining = Math.ceil((cfg.cooldownMs - (now - last)) / 1000);
-    return safeReply(interaction, {
-      embeds: [warningEmbed("AI cooldown", `Try again in **${remaining}s**.`)],
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
-  cooldowns.set(key, now);
-  await interaction.deferReply();
+  const startedAt = Date.now();
 
   try {
-    const answer = await askVyneAI({
-      guildId: interaction.guildId,
-      userId: interaction.user.id,
-      username: interaction.user.tag,
-      prompt,
-      channelName: interaction.channel?.name
-    });
+    // Acknowledge immediately so Discord never expires the interaction while Gemini is responding.
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferReply();
+    }
+
+    const cfg = getAIConfig(interaction.guildId);
+    const prompt = interaction.options.getString("prompt");
+    const now = Date.now();
+    const key = `ai:${interaction.guildId}:${interaction.user.id}`;
+    const last = cooldowns.get(key) || 0;
+
+    if (now - last < cfg.cooldownMs) {
+      const remaining = Math.ceil((cfg.cooldownMs - (now - last)) / 1000);
+      return safeReply(interaction, {
+        embeds: [warningEmbed("AI cooldown", `Try again in **${remaining}s**.`)],
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    cooldowns.set(key, now);
+
+    const answer = await Promise.race([
+      askVyneAI({
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        username: interaction.user.tag,
+        prompt,
+        channelName: interaction.channel?.name
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Gemini took too long to respond. Please try again.")), 25000)
+      )
+    ]);
 
     const e = embed(
       "🤖 Vyne AI",
       answer,
       COLORS.primary
-    ).setFooter({ text: `Vyne AI • ${AI_MODEL}` });
+    ).setFooter({ text: `Vyne AI • ${AI_MODEL} • ${Date.now() - startedAt}ms` });
 
-    return interaction.editReply({ embeds: [e] });
+    return safeReply(interaction, { embeds: [e] });
   } catch (err) {
-    return interaction.editReply({
-      embeds: [errorEmbed("AI unavailable", String(err.message || err).slice(0, 1500))]
+    console.error("Vyne AI command error:", err?.stack || err);
+
+    return safeReply(interaction, {
+      embeds: [
+        errorEmbed(
+          "AI unavailable",
+          truncate(String(err?.message || err || "Unknown AI error."), 1500)
+        )
+      ],
+      flags: MessageFlags.Ephemeral
     });
   }
 }
