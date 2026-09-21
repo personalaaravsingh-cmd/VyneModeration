@@ -29,6 +29,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { handleMusicCommand, restore247, flushMusicData } = require("./music");
 
 const {
   DISCORD_TOKEN,
@@ -1439,6 +1440,35 @@ const commands = [
   new SlashCommandBuilder().setName("about").setDescription("Learn about Vyne and open official links."),
   new SlashCommandBuilder().setName("ping").setDescription("Check Vyne's latency."),
   new SlashCommandBuilder().setName("botstats").setDescription("View Vyne bot, process and hosting statistics."),
+  new SlashCommandBuilder().setName("music").setDescription("Play YouTube music in voice channels.")
+    .addSubcommand(s => s.setName("play").setDescription("Play a YouTube URL or search for a song.")
+      .addStringOption(o => o.setName("query").setDescription("YouTube URL or song name").setRequired(true)))
+    .addSubcommand(s => s.setName("pause").setDescription("Pause the current track."))
+    .addSubcommand(s => s.setName("resume").setDescription("Resume the current track."))
+    .addSubcommand(s => s.setName("skip").setDescription("Skip the current track."))
+    .addSubcommand(s => s.setName("stop").setDescription("Stop playback and clear the queue."))
+    .addSubcommand(s => s.setName("queue").setDescription("View the music queue."))
+    .addSubcommand(s => s.setName("nowplaying").setDescription("View the current track."))
+    .addSubcommand(s => s.setName("volume").setDescription("Set music volume.")
+      .addIntegerOption(o => o.setName("percent").setDescription("Volume from 0 to 100").setMinValue(0).setMaxValue(100).setRequired(true)))
+    .addSubcommand(s => s.setName("seek").setDescription("Seek within the current track.")
+      .addIntegerOption(o => o.setName("seconds").setDescription("Position in seconds").setMinValue(0).setMaxValue(86400).setRequired(true)))
+    .addSubcommand(s => s.setName("loop").setDescription("Set the loop mode.")
+      .addStringOption(o => o.setName("mode").setDescription("Loop mode").setRequired(true)
+        .addChoices({ name: "Off", value: "off" }, { name: "Track", value: "track" }, { name: "Queue", value: "queue" })))
+    .addSubcommand(s => s.setName("shuffle").setDescription("Shuffle the queue."))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a track from the queue.")
+      .addIntegerOption(o => o.setName("position").setDescription("Queue position").setMinValue(1).setMaxValue(100).setRequired(true)))
+    .addSubcommand(s => s.setName("clear").setDescription("Clear the queue."))
+    .addSubcommand(s => s.setName("join").setDescription("Join your current voice channel."))
+    .addSubcommand(s => s.setName("disconnect").setDescription("Leave voice and clear the music session."))
+    .addSubcommand(s => s.setName("lyrics").setDescription("Show lyrics for the current track."))
+    .addSubcommand(s => s.setName("autoplay").setDescription("Keep music going with YouTube recommendations • 💎 Premium.")
+      .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable autoplay").setRequired(true)))
+    .addSubcommand(s => s.setName("fairplay").setDescription("Rotate queue priority between users • 💎 Premium.")
+      .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable Fair Play").setRequired(true)))
+    .addSubcommand(s => s.setName("247").setDescription("Stay in voice even when playback ends • 💎 Premium.")
+      .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable 24/7").setRequired(true))),
   new SlashCommandBuilder().setName("ask").setDescription("Ask Vyne AI a question.")
     .addStringOption(o => o.setName("prompt").setDescription("Your question or request.").setRequired(true)),
   new SlashCommandBuilder().setName("ai").setDescription("Configure Vyne AI.")
@@ -3606,6 +3636,7 @@ async function handleInteraction(interaction) {
       ticket: () => interaction.options.getSubcommand(false) === "builder",
       welcome: () => ["advanced", "preview"].includes(interaction.options.getSubcommand(false)),
       notify: () => ["youtube", "reddit", "remove", "list"].includes(interaction.options.getSubcommand(false))
+      music: () => ["autoplay", "fairplay", "247"].includes(interaction.options.getSubcommand(false))
     };
     const premiumRule = premiumSubcommandRules[command];
     if (premiumRule?.() && !premiumActive(interaction.user.id, interaction.guildId)) {
@@ -3614,6 +3645,7 @@ async function handleInteraction(interaction) {
 
     if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
     if(command==="ask") return handleAICommand(interaction);
+    if(command==="music") return handleMusicCommand(interaction, premiumActive);
 
     if(command==="ai"){
       const sub=interaction.options.getSubcommand(), cfg=getAIConfig(interaction.guildId);
@@ -4102,6 +4134,7 @@ client.once("clientReady", async readyClient => {
 });
 
 function flushPersistentData() {
+  flushMusicData();
   writeJSON(FILES.config, db.config);
   writeJSON(FILES.tickets, db.tickets);
   writeJSON(FILES.premium, db.premium);
