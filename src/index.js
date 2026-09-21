@@ -221,6 +221,8 @@ function defaultGuildConfig() {
       enabled: false,
       channelId: null,
       roleId: null,
+      unverifiedRoleId: null,
+      lockChannels: true,
       accountAge: 0
     },
     tickets: {
@@ -465,6 +467,94 @@ function canBotManageRole(guild, role) {
   const me = guild.members.me;
   return Boolean(me && role && role.editable && role.position < me.roles.highest.position);
 }
+
+async function getOrCreateVerificationRole(guild, name, color, reason) {
+  let role = guild.roles.cache.find(r => r.name === name && !r.managed);
+  if (role) return role;
+  role = await guild.roles.create({
+    name,
+    color,
+    hoist: false,
+    mentionable: false,
+    reason
+  });
+  return role;
+}
+
+async function configureVerificationChannels(guild, cfg) {
+  if (!cfg.verification.enabled || !cfg.verification.unverifiedRoleId) return;
+  const unverifiedRole = guild.roles.cache.get(cfg.verification.unverifiedRoleId);
+  if (!unverifiedRole) return;
+
+  const verificationChannelId = cfg.verification.channelId;
+  const channels = [...guild.channels.cache.values()];
+  const locked = [];
+
+  for (const channel of channels) {
+    if (!channel.permissionOverwrites?.edit) continue;
+    try {
+      if (channel.id === verificationChannelId) {
+        await channel.permissionOverwrites.edit(unverifiedRole.id, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true,
+          AddReactions: true
+        }, { reason: "Vyne verification channel access" });
+      } else {
+        await channel.permissionOverwrites.edit(unverifiedRole.id, {
+          ViewChannel: false,
+          SendMessages: false,
+          Connect: false,
+          Speak: false
+        }, { reason: "Vyne verification lock" });
+        locked.push(channel.id);
+      }
+    } catch (err) {
+      console.error(`Verification channel permission update failed for ${channel.id}:`, err?.message || err);
+    }
+  }
+
+  cfg.verification.lockedChannelIds = locked;
+  writeJSON(FILES.config, db.config);
+}
+
+async function removeVerificationChannelLocks(guild, cfg) {
+  const roleId = cfg.verification.unverifiedRoleId;
+  if (!roleId) return;
+  const channels = [...guild.channels.cache.values()];
+
+  for (const channel of channels) {
+    if (!channel.permissionOverwrites?.delete) continue;
+    try {
+      await channel.permissionOverwrites.delete(roleId, "Vyne verification disabled");
+    } catch (err) {
+      console.error(`Verification channel unlock failed for ${channel.id}:`, err?.message || err);
+    }
+  }
+
+  cfg.verification.lockedChannelIds = [];
+  writeJSON(FILES.config, db.config);
+}
+
+async function applyVerificationRoles(guild, cfg) {
+  if (!cfg.verification.enabled || !cfg.verification.unverifiedRoleId) return;
+  const unverifiedRole = guild.roles.cache.get(cfg.verification.unverifiedRoleId);
+  const verifiedRole = cfg.verification.roleId ? guild.roles.cache.get(cfg.verification.roleId) : null;
+  if (!unverifiedRole) return;
+
+  await guild.members.fetch().catch(() => null);
+  const jobs = [];
+  for (const member of guild.members.cache.values()) {
+    if (member.user.bot) continue;
+    if (verifiedRole && member.roles.cache.has(verifiedRole.id)) {
+      if (member.roles.cache.has(unverifiedRole.id)) jobs.push(member.roles.remove(unverifiedRole, "Vyne verification sync").catch(() => {}));
+    } else if (!member.roles.cache.has(unverifiedRole.id) && unverifiedRole.editable) {
+      jobs.push(member.roles.add(unverifiedRole, "Vyne verification required").catch(() => {}));
+    }
+  }
+  await Promise.all(jobs);
+}
+
 
 async function safeReply(interaction, payload) {
   try {
@@ -1238,7 +1328,7 @@ const commands = [
     .addSubcommand(s => s.setName("status").setDescription("View raid protection status.")),
   new SlashCommandBuilder().setName("verify").setDescription("Configure member verification.")
     .addSubcommand(s => s.setName("setup").setDescription("Create a verification panel.")
-      .addRoleOption(o => o.setName("role").setDescription("Role granted after verification.").setRequired(true))
+      .addRoleOption(o => o.setName("role").setDescription("Verified role. Leave empty to create one automatically."))
       .addIntegerOption(o => o.setName("account_age_days").setDescription("Minimum account age in days.").setMinValue(0).setMaxValue(3650)))
     .addSubcommand(s => s.setName("disable").setDescription("Disable verification.")),
 
@@ -2622,6 +2712,15 @@ client.on("guildMemberAdd", async member => {
   trackAnalytics(member.guild.id, "joins");
   const cfg = getGuildData(member.guild.id);
 
+  if (cfg.verification.enabled && !member.user.bot && cfg.verification.unverifiedRoleId) {
+    const unverifiedRole = member.guild.roles.cache.get(cfg.verification.unverifiedRoleId);
+    if (unverifiedRole?.editable && !member.roles.cache.has(cfg.verification.roleId)) {
+      await member.roles.add(unverifiedRole, "Vyne verification required").catch(err => {
+        console.error("Verification role assignment failed:", err?.message || err);
+      });
+    }
+  }
+
   await logAction(member.guild, "📥 Member joined", `<@${member.id}> joined the server.`, COLORS.success, [
     { name: "Account created", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
   ]);
@@ -2845,11 +2944,17 @@ async function handleInteraction(interaction) {
       if (interaction.customId === "cfg_ai") return interaction.reply({embeds:[aiStatusEmbed(interaction.guildId)],flags:MessageFlags.Ephemeral});
       if (interaction.customId === "vyne_verify") {
         const cfg=getGuildData(interaction.guildId); if(!cfg.verification.enabled||!cfg.verification.roleId) return safeReply(interaction,{embeds:[errorEmbed("Verification unavailable","Verification is not configured.")],flags:MessageFlags.Ephemeral});
-        const role=interaction.guild.roles.cache.get(cfg.verification.roleId); if(!role||!canBotManageRole(interaction.guild,role)) return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the verification role.")],flags:MessageFlags.Ephemeral});
-        const member=await interaction.guild.members.fetch(interaction.user.id); if(member.roles.cache.has(role.id)) return safeReply(interaction,{embeds:[infoEmbed("Already verified","You already have the verification role.")],flags:MessageFlags.Ephemeral});
+        const role=interaction.guild.roles.cache.get(cfg.verification.roleId);
+        const unverifiedRole=cfg.verification.unverifiedRoleId?interaction.guild.roles.cache.get(cfg.verification.unverifiedRoleId):null;
+        if(!role||!canBotManageRole(interaction.guild,role)) return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the verified role.")],flags:MessageFlags.Ephemeral});
+        if(unverifiedRole&&!canBotManageRole(interaction.guild,unverifiedRole)) return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the unverified role.")],flags:MessageFlags.Ephemeral});
+        const member=await interaction.guild.members.fetch(interaction.user.id);
+        if(member.roles.cache.has(role.id)) return safeReply(interaction,{embeds:[infoEmbed("Already verified","You already have the verification role.")],flags:MessageFlags.Ephemeral});
         if(cfg.verification.accountAge>0&&Date.now()-member.user.createdTimestamp<cfg.verification.accountAge) return safeReply(interaction,{embeds:[warningEmbed("Account too new",`Try again in **${fmtDuration(cfg.verification.accountAge-(Date.now()-member.user.createdTimestamp))}**.`)],flags:MessageFlags.Ephemeral});
-        await member.roles.add(role,"Vyne verification"); await logAction(interaction.guild,"🔐 Member verified",`<@${member.id}> received ${role}.`,COLORS.success);
-        return safeReply(interaction,{embeds:[success("Verification complete",`You received ${role}.`)],flags:MessageFlags.Ephemeral});
+        await member.roles.add(role,"Vyne verification");
+        if(unverifiedRole&&member.roles.cache.has(unverifiedRole.id)) await member.roles.remove(unverifiedRole,"Vyne verification complete");
+        await logAction(interaction.guild,"🔐 Member verified",`<@${member.id}> received ${role} and had the unverified role removed.`,COLORS.success);
+        return safeReply(interaction,{embeds:[success("Verification complete",`You received ${role}. Your server access has been unlocked.`)],flags:MessageFlags.Ephemeral});
       }
 
       if (interaction.customId === "vyne_ticket_create") {
@@ -3144,7 +3249,54 @@ async function handleInteraction(interaction) {
 
     if(command==="raid"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);if(sub==="status")return safeReply(interaction,{embeds:[infoEmbed("🚨 Raid Protection",`Status: **${cfg.raid.enabled?"Enabled":"Disabled"}**\nJoin limit: **${cfg.raid.joinLimit}**\nWindow: **${cfg.raid.window}ms**\nAccount age: **${fmtDuration(cfg.raid.accountAge)}**`)]});cfg.raid.enabled=sub==="on";writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Raid protection updated",`Raid protection is now **${cfg.raid.enabled?"enabled":"disabled"}**.`)]});}
 
-    if(command==="verify"){if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);if(sub==="disable"){cfg.verification.enabled=false;writeJSON(FILES.config,db.config);return safeReply(interaction,{embeds:[success("Verification disabled","Verification has been disabled.")]});}const role=interaction.options.getRole("role");if(!canBotManageRole(interaction.guild,role))return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the verification role.")],flags:MessageFlags.Ephemeral});const days=interaction.options.getInteger("account_age_days")||0;cfg.verification={enabled:true,channelId:interaction.channelId,roleId:role.id,accountAge:days*86400000};writeJSON(FILES.config,db.config);await interaction.channel.send({embeds:[embed("🔐 Server Verification",`Click below to verify.${days?`\n\nMinimum account age: **${days} days**`:""}`,COLORS.info)],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("vyne_verify").setLabel("Verify").setEmoji("🔐").setStyle(ButtonStyle.Success))]});return safeReply(interaction,{embeds:[success("Verification configured",`Verification role: ${role}`)]});}
+    if(command==="verify"){
+      if(!isStaff(interaction))return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions.")],flags:MessageFlags.Ephemeral});
+      const sub=interaction.options.getSubcommand();
+      const cfg=getGuildData(interaction.guildId);
+
+      if(sub==="disable"){
+        await removeVerificationChannelLocks(interaction.guild,cfg);
+        const unverifiedRole=cfg.verification.unverifiedRoleId?interaction.guild.roles.cache.get(cfg.verification.unverifiedRoleId):null;
+        if(unverifiedRole){
+          await interaction.guild.members.fetch().catch(()=>null);
+          await Promise.all([...interaction.guild.members.cache.values()]
+            .filter(m=>!m.user.bot&&m.roles.cache.has(unverifiedRole.id))
+            .map(m=>m.roles.remove(unverifiedRole,"Vyne verification disabled").catch(()=>{})));
+        }
+        cfg.verification.enabled=false;
+        writeJSON(FILES.config,db.config);
+        return safeReply(interaction,{embeds:[success("Verification disabled","Verification has been disabled and the channel locks have been removed.")]});
+      }
+
+      const selectedRole=interaction.options.getRole("role");
+      const verifiedRole=selectedRole||await getOrCreateVerificationRole(interaction.guild,"Verified",COLORS.success,"Vyne verification setup");
+      const unverifiedRole=await getOrCreateVerificationRole(interaction.guild,"Unverified",COLORS.danger,"Vyne verification setup");
+
+      if(!canBotManageRole(interaction.guild,verifiedRole)||!canBotManageRole(interaction.guild,unverifiedRole))
+        return safeReply(interaction,{embeds:[errorEmbed("Role hierarchy","Move Vyne's role above the Verified and Unverified roles.")],flags:MessageFlags.Ephemeral});
+
+      const days=interaction.options.getInteger("account_age_days")||0;
+      cfg.verification={
+        enabled:true,
+        channelId:interaction.channelId,
+        roleId:verifiedRole.id,
+        unverifiedRoleId:unverifiedRole.id,
+        lockChannels:true,
+        accountAge:days*86400000
+      };
+      writeJSON(FILES.config,db.config);
+
+      await configureVerificationChannels(interaction.guild,cfg);
+      await applyVerificationRoles(interaction.guild,cfg);
+
+      await interaction.channel.send({
+        embeds:[embed("🔐 Server Verification",
+          `**Verification is now active.**\n\nAll server channels are locked for the **Unverified** role. Members receive the **Unverified** role when they join and it is removed automatically after successful verification.\n\nClick below to verify.${days?`\n\nMinimum account age: **${days} days**`:""}`,
+          COLORS.info)],
+        components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("vyne_verify").setLabel("Verify").setEmoji("🔐").setStyle(ButtonStyle.Success))]
+      });
+      return safeReply(interaction,{embeds:[success("Verification configured",`Verified role: ${verifiedRole}\nUnverified role: ${unverifiedRole}\nVerification channel: <#${interaction.channelId}>`)]});
+    }
 
     if(command==="ticket"){
       const sub=interaction.options.getSubcommand(),cfg=getGuildData(interaction.guildId);
