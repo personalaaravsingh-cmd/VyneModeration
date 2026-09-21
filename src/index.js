@@ -1573,10 +1573,10 @@ function helpPayload(page = "home") {
 
 async function sendHelp(interaction, page = "home") {
   try {
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.deferReply();
-    }
-    return interaction.editReply(helpPayload(page));
+    // /help is intentionally public and is not globally deferred. Reply directly so
+    // the command can never remain stuck in Discord's "Vyne is thinking..." state.
+    if (interaction.deferred || interaction.replied) return interaction.editReply(helpPayload(page));
+    return interaction.reply(helpPayload(page));
   } catch (err) {
     console.error("Help panel error:", err?.stack || err);
     return safeReply(interaction, {
@@ -2652,11 +2652,9 @@ async function handleInteraction(interaction) {
         interaction.commandName === "welcome" &&
         interaction.options.getSubcommand(false) === "advanced";
 
-      if (!isWelcomeAdvanced && !interaction.replied && !interaction.deferred) {
+      if (!isWelcomeAdvanced && interaction.commandName !== "help" && !interaction.replied && !interaction.deferred) {
         console.log(`📨 Interaction received: /${interaction.commandName}`);
-        const publicCommands = new Set(["help"]);
-        const flags = publicCommands.has(interaction.commandName) ? undefined : MessageFlags.Ephemeral;
-        await interaction.deferReply(flags === undefined ? {} : { flags });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -2903,6 +2901,21 @@ async function handleInteraction(interaction) {
       if(sub==="clear"){ if(db.ai[interaction.guildId]){delete db.ai[interaction.guildId][interaction.user.id];writeJSON(FILES.ai,db.ai);} return safeReply(interaction,{embeds:[success("AI history cleared","Your conversation history has been cleared.")]}); }
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","Only server staff can enable or disable AI.")],flags:MessageFlags.Ephemeral});
       cfg.enabled=sub==="enable"; writeJSON(FILES.config,db.config); return safeReply(interaction,{embeds:[success("AI configuration updated",`Vyne AI is now **${cfg.enabled?"enabled":"disabled"}**.`)]});
+    }
+
+    // Hard Premium gate for every Premium-only slash command/subcommand.
+    // This runs before command handlers so newly added handlers cannot accidentally bypass access.
+    const premiumCommandRules = {
+      automodpro: true,
+      antinukewhitelist: true,
+      analytics: true,
+      voicemaster: true,
+      ticket: ["builder"].includes(interaction.options.getSubcommand(false)),
+      welcome: ["advanced", "preview"].includes(interaction.options.getSubcommand(false)),
+      notify: ["youtube", "reddit", "remove", "list"].includes(interaction.options.getSubcommand(false))
+    };
+    if (premiumCommandRules[command] && !premiumActive(interaction.user.id, interaction.guildId)) {
+      return requirePremium(interaction);
     }
 
     if(command==="help") return sendHelp(interaction,"home");
