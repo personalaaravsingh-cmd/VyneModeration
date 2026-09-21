@@ -3646,7 +3646,13 @@ async function handleInteraction(interaction) {
 
     if(["ban","unban","kick","timeout","untimeout","mute","unmute","softban","warn","warnings","clearwarnings","purge","lock","unlock","slowmode","nick","role"].includes(command)) return handleModeration(interaction);
     if(command==="ask") return handleAICommand(interaction);
-    if(command==="music") return handleMusicCommand(interaction, premiumActive);
+    if(command==="music") {
+      // Music handlers may return a payload (pause/resume/queue/etc.) or null
+      // when they have already sent/edited the interaction (e.g. /play).
+      const musicResult = await handleMusicCommand(interaction, premiumActive);
+      if (musicResult) return safeReply(interaction, musicResult);
+      return;
+    }
     if(command==="forcefixmusic"){
       if(!isStaff(interaction)) return safeReply(interaction,{embeds:[errorEmbed("Permission denied","You need moderation permissions to force-fix the music connection.")],flags:MessageFlags.Ephemeral});
       await deferOnce(interaction, MessageFlags.Ephemeral);
