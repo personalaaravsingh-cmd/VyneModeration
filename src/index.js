@@ -466,7 +466,8 @@ function defaultGuildConfig() {
       window: 10000,
       accountAge: 86400000,
       lockdown: false,
-      lockdownChannelId: null
+      lockdownChannelId: null,
+      lockdownOverwrites: {}
     },
     antinuke: {
       enabled: false,
@@ -2182,10 +2183,23 @@ for (const [key, eventName] of Object.entries({
   webhooks: "WebhookDelete",
   webhookCreate: "WebhookCreate",
   permissionChanges: "ChannelOverwriteUpdate",
-  botAdd: "BotAdd",
-  memberRoleUpdate: "MemberRoleUpdate"
+  botAdd: "BotAdd"
 })) {
   if (typeof AuditLogEvent?.[eventName] === "number") ANTI_NUKE_ACTIONS[AuditLogEvent[eventName]] = key;
+}
+
+// Discord exposes separate audit-log actions for webhook creation/deletion and
+// channel permission-overwrite create/update/delete. They all use one Vyne
+// protection rule, so make every variant hit the configured threshold.
+for (const eventName of ["WebhookCreate", "WebhookDelete"]) {
+  if (typeof AuditLogEvent?.[eventName] === "number") {
+    ANTI_NUKE_ACTIONS[AuditLogEvent[eventName]] = "webhooks";
+  }
+}
+for (const eventName of ["ChannelOverwriteCreate", "ChannelOverwriteUpdate", "ChannelOverwriteDelete"]) {
+  if (typeof AuditLogEvent?.[eventName] === "number") {
+    ANTI_NUKE_ACTIONS[AuditLogEvent[eventName]] = "permissionChanges";
+  }
 }
 
 function antinukeWhitelistIncludes(guild, executorId) {
@@ -2198,8 +2212,7 @@ function antinukeWhitelistIncludes(guild, executorId) {
 
 async function setLockdown(guild, enabled, reason = "Vyne emergency lockdown") {
   const cfg = getGuildData(guild.id);
-  cfg.raid.lockdown = enabled;
-  writeJSON(FILES.config, db.config);
+  const wasLocked = Boolean(cfg.raid.lockdown);
 
   const channelTypes = new Set([
     ChannelType.GuildText,
@@ -2212,12 +2225,30 @@ async function setLockdown(guild, enabled, reason = "Vyne emergency lockdown") {
     ch => channelTypes.has(ch.type) && ch.permissionOverwrites?.edit
   );
 
+  if (enabled && !wasLocked) {
+    cfg.raid.lockdownOverwrites = {};
+    for (const ch of channels.values()) {
+      const overwrite = ch.permissionOverwrites.cache.get(guild.roles.everyone.id);
+      cfg.raid.lockdownOverwrites[ch.id] =
+        overwrite?.allow?.has(PermissionFlagsBits.SendMessages) ? true :
+        overwrite?.deny?.has(PermissionFlagsBits.SendMessages) ? false :
+        null;
+    }
+  }
+
+  cfg.raid.lockdown = enabled;
+  writeJSON(FILES.config, db.config);
+
+  const snapshots = cfg.raid.lockdownOverwrites || {};
   const results = await Promise.all(
     [...channels.values()].map(async ch => {
       try {
+        const previous = Object.prototype.hasOwnProperty.call(snapshots, ch.id)
+          ? snapshots[ch.id]
+          : null;
         await ch.permissionOverwrites.edit(
           guild.roles.everyone,
-          { SendMessages: enabled ? false : null },
+          { SendMessages: enabled ? false : previous },
           { reason: enabled ? reason : "Vyne lockdown disabled" }
         );
         return true;
@@ -2230,6 +2261,11 @@ async function setLockdown(guild, enabled, reason = "Vyne emergency lockdown") {
 
   const changed = results.filter(Boolean).length;
   const skipped = results.length - changed;
+
+  if (!enabled) {
+    cfg.raid.lockdownOverwrites = {};
+    writeJSON(FILES.config, db.config);
+  }
 
   await logAction(
     guild,
@@ -3330,7 +3366,7 @@ async function handleInteraction(interaction) {
   try {
     // Acknowledge slash commands immediately so Discord never reaches the 3-second timeout
     // while Vyne is doing config/database/API work. Modal-based commands must remain un-deferred.
-    if (interaction.isChatInputCommand() && !interaction.replied && !interaction.deferred && interaction.commandName !== "reports") {
+    if (interaction.isChatInputCommand() && !interaction.replied && !interaction.deferred && interaction.commandName !== "reports" && !(interaction.commandName === "welcome" && interaction.options.getSubcommand(false) === "advanced")) {
       // ACK every normal slash command immediately. /reports is excluded because it
       // must open a modal as its initial interaction response.
       console.log(`📨 Interaction received: /${interaction.commandName}`);
