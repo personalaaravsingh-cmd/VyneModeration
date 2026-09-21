@@ -603,8 +603,9 @@ async function handleMusicCommand(interaction, premiumActive) {
   if (sub === "play") {
     const channel = requireVoice(interaction);
     const query = interaction.options.getString("query", true);
-    await interaction.deferReply();
-
+    // All slash commands are acknowledged centrally by handleInteraction().
+    // Do not call deferReply() here: doing so after the central ACK leaves the
+    // interaction stuck in "Thinking..." and causes InteractionAlreadyReplied.
     const track = await resolveTrack(query, interaction.user);
 
     const connection = getVoiceConnection(guildId);
