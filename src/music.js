@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const play = require("@iamtraction/play-dl");
+const { createCanvas, loadImage } = require("@napi-rs/canvas");
 const {
   joinVoiceChannel,
   getVoiceConnection,
@@ -85,7 +86,10 @@ function sessionFor(guildId) {
     history: [],
     lastRequester: null,
     advancing: false,
-    idleTimer: null
+    idleTimer: null,
+    nowPlayingMessage: null,
+    cardTimer: null,
+    lastCardSecond: null
   };
 
   player.on(AudioPlayerStatus.Idle, () => {
@@ -182,7 +186,9 @@ async function resolveTrack(query, requester) {
     duration,
     durationText: formatDuration(duration),
     thumbnail: details.thumbnails?.[0]?.url || null,
-    channel: cleanTitle(details.author?.name || details.author?.title || "YouTube"),
+    artist: cleanTitle(details.author?.name || details.author?.title || "Unknown artist"),
+    channel: cleanTitle(details.channel?.name || details.author?.name || details.author?.title || "YouTube"),
+    uploader: cleanTitle(details.channel?.name || details.author?.name || "YouTube"),
     requesterId: requester.id,
     requesterTag: requester.tag || requester.username || requester.id,
     addedAt: Date.now()
@@ -284,6 +290,10 @@ async function startCurrent(guildId, track, seekSeconds = 0) {
   session.history = session.history.slice(-25);
   session.player.play(resource);
   cancelIdleDisconnect(session);
+  if (session.nowPlayingMessage) {
+    session.lastCardSecond = null;
+    void updateNowPlayingCard(guildId, true);
+  }
 
   return settings;
 }
@@ -370,6 +380,200 @@ function trackLine(track, index = null) {
   const prefix = index === null ? "🎵" : `**${index}.**`;
   const requester = /^\\d{17,20}$/.test(String(track.requesterId || "")) ? `<@${track.requesterId}>` : "Vyne Autoplay";
   return `${prefix} [${cleanTitle(track.title)}](${track.url}) • \`${track.durationText}\` • ${requester}`;
+}
+
+function currentElapsed(track) {
+  if (!track) return 0;
+  return Math.max(0, Math.floor((Date.now() - (track.startedAt || Date.now())) / 1000) + (track.seek || 0));
+}
+
+function fitText(ctx, text, maxWidth) {
+  let value = String(text || "");
+  if (ctx.measureText(value).width <= maxWidth) return value;
+  while (value.length > 1 && ctx.measureText(value + "…").width > maxWidth) value = value.slice(0, -1);
+  return value + "…";
+}
+
+async function renderNowPlayingCard(track, elapsed = 0, volume = 75, loop = "off") {
+  const width = 1200;
+  const height = 520;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+
+  const bg = ctx.createLinearGradient(0, 0, width, height);
+  bg.addColorStop(0, "#11111a");
+  bg.addColorStop(0.55, "#17172a");
+  bg.addColorStop(1, "#09090f");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  // Subtle accent glow.
+  const glow = ctx.createRadialGradient(1040, 70, 10, 1040, 70, 360);
+  glow.addColorStop(0, "rgba(124,92,255,0.34)");
+  glow.addColorStop(1, "rgba(124,92,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(650, 0, 550, 360);
+
+  let thumbnail = null;
+  if (track?.thumbnail) {
+    try { thumbnail = await loadImage(track.thumbnail); } catch {}
+  }
+
+  const imageX = 45;
+  const imageY = 45;
+  const imageSize = 330;
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(imageX, imageY, imageSize, imageSize, 24);
+  ctx.clip();
+  if (thumbnail) {
+    ctx.drawImage(thumbnail, imageX, imageY, imageSize, imageSize);
+  } else {
+    ctx.fillStyle = "#252535";
+    ctx.fillRect(imageX, imageY, imageSize, imageSize);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 72px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("♪", imageX + imageSize / 2, imageY + 205);
+  }
+  ctx.restore();
+
+  const x = 420;
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#7c5cff";
+  ctx.font = "700 24px sans-serif";
+  ctx.fillText("VYNE  •  NOW PLAYING", x, 78);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 38px sans-serif";
+  ctx.fillText(fitText(ctx, track?.title || "Unknown track", 720), x, 132);
+
+  ctx.fillStyle = "#b8b8c8";
+  ctx.font = "500 24px sans-serif";
+  ctx.fillText(fitText(ctx, `Artist • ${track?.artist || track?.channel || "Unknown artist"}`, 720), x, 174);
+
+  ctx.fillStyle = "#88889a";
+  ctx.font = "500 20px sans-serif";
+  ctx.fillText(fitText(ctx, `YouTube • ${track?.uploader || track?.channel || "Unknown channel"}`, 720), x, 210);
+
+  const total = Math.max(1, Number(track?.duration) || 1);
+  const progress = Math.max(0, Math.min(1, elapsed / total));
+  const barX = x;
+  const barY = 290;
+  const barW = 720;
+  const barH = 12;
+  ctx.fillStyle = "#303041";
+  ctx.roundRect(barX, barY, barW, barH, 6);
+  ctx.fill();
+  ctx.fillStyle = "#7c5cff";
+  ctx.roundRect(barX, barY, Math.max(8, barW * progress), barH, 6);
+  ctx.fill();
+
+  ctx.fillStyle = "#e7e7ef";
+  ctx.font = "600 19px sans-serif";
+  ctx.fillText(formatDuration(elapsed), barX, 330);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#9d9daf";
+  ctx.fillText(formatDuration(total), barX + barW, 330);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#8f8fa2";
+  ctx.font = "500 18px sans-serif";
+  ctx.fillText(`Volume ${volume}%  •  Loop ${loop}  •  Requested by ${track?.requesterTag || "Vyne"}`, x, 382);
+
+  ctx.fillStyle = "#5d5d70";
+  ctx.font = "500 16px sans-serif";
+  ctx.fillText("Vyne Music  •  YouTube", x, 430);
+
+  return canvas.toBuffer("image/png");
+}
+
+async function updateNowPlayingCard(guildId, force = false) {
+  const session = sessionFor(guildId);
+  const message = session.nowPlayingMessage;
+  if (!message || !session.current) return;
+  const elapsed = currentElapsed(session.current);
+  if (!force && session.lastCardSecond !== null && Math.abs(elapsed - session.lastCardSecond) < 5) return;
+  try {
+    const buffer = await renderNowPlayingCard(session.current, elapsed, session.volume, session.loop);
+    await message.edit({
+      content: "",
+      files: [{ attachment: buffer, name: "vyne-now-playing.png" }]
+    });
+    session.lastCardSecond = elapsed;
+  } catch (err) {
+    console.error(`[Music:${guildId}] now-playing card update error:`, err?.message || err);
+  }
+}
+
+function startNowPlayingUpdater(guildId) {
+  const session = sessionFor(guildId);
+  if (session.cardTimer) return;
+  session.cardTimer = setInterval(() => {
+    if (!session.current || !session.nowPlayingMessage) {
+      clearInterval(session.cardTimer);
+      session.cardTimer = null;
+      return;
+    }
+    void updateNowPlayingCard(guildId);
+  }, 5000);
+}
+
+function stopNowPlayingUpdater(session) {
+  if (session.cardTimer) clearInterval(session.cardTimer);
+  session.cardTimer = null;
+  session.nowPlayingMessage = null;
+  session.lastCardSecond = null;
+}
+
+async function sendNowPlayingCard(interaction, guildId) {
+  const session = sessionFor(guildId);
+  if (!session.current) return payloadEmbed("🎵 Now Playing", "Nothing is currently playing.", COLORS.info);
+  const buffer = await renderNowPlayingCard(session.current, currentElapsed(session.current), session.volume, session.loop);
+  const payload = { files: [{ attachment: buffer, name: "vyne-now-playing.png" }] };
+  if (interaction.replied || interaction.deferred) {
+    const message = await interaction.editReply(payload);
+    session.nowPlayingMessage = message;
+  } else {
+    const message = await interaction.reply({ ...payload, fetchReply: true });
+    session.nowPlayingMessage = message;
+  }
+  session.lastCardSecond = currentElapsed(session.current);
+  startNowPlayingUpdater(guildId);
+  return null;
+}
+
+async function forceFixMusic(guild, requesterId) {
+  const guildId = guild.id;
+  const session = sessionFor(guildId);
+  const settings = stateFor(guildId);
+  if (!session.current) throw new Error("There is no active track to force-fix.");
+  const channelId = session.voiceChannelId || settings.voiceChannelId;
+  const channel = guild.channels.cache.get(channelId);
+  if (!channel || channel.type !== 2) throw new Error("The saved music voice channel no longer exists.");
+
+  const track = { ...session.current };
+  const elapsed = currentElapsed(track);
+  settings.voiceChannelId = channel.id;
+  settings.ownerId = settings.ownerId || requesterId;
+  savePersistent();
+
+  session.advancing = true;
+  try {
+    stopNowPlayingUpdater(session);
+    session.player.stop(true);
+    const old = getVoiceConnection(guildId);
+    if (old) old.destroy();
+    session.connection = null;
+    session.voiceChannelId = null;
+
+    await new Promise(resolve => setTimeout(resolve, 900));
+    await connectToChannel(guild, channel);
+    await startCurrent(guildId, track, Math.min(elapsed, Math.max(0, track.duration - 1)));
+    return { track, elapsed };
+  } finally {
+    session.advancing = false;
+  }
 }
 
 function requireVoice(interaction) {
@@ -462,6 +666,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     session.current = null;
     session.lastRequester = null;
     session.loop = "off";
+    stopNowPlayingUpdater(session);
     session.advancing = false;
     if (!settings.always247) scheduleIdleDisconnect(guildId);
     return payloadEmbed("⏹️ Stopped", settings.always247 ? "Playback stopped. 24/7 is still keeping Vyne in the voice channel." : "Playback stopped and the queue was cleared.", COLORS.success);
@@ -476,15 +681,7 @@ async function handleMusicCommand(interaction, premiumActive) {
 
   if (sub === "nowplaying") {
     if (!session.current) return payloadEmbed("🎵 Now Playing", "Nothing is currently playing.", COLORS.info);
-    const elapsed = Math.max(0, Math.floor((Date.now() - session.current.startedAt) / 1000) + (session.current.seek || 0));
-    return {
-      embeds: [{
-        title: "🎵 Now Playing",
-        description: `${trackLine(session.current)}\n\n**Progress:** \`${formatDuration(elapsed)} / ${session.current.durationText}\`\n**Volume:** \`${session.volume}%\`\n**Loop:** \`${session.loop}\``,
-        color: COLORS.info,
-        thumbnail: session.current.thumbnail ? { url: session.current.thumbnail } : undefined
-      }]
-    };
+    return sendNowPlayingCard(interaction, guildId);
   }
 
   if (sub === "volume") {
@@ -556,6 +753,7 @@ async function handleMusicCommand(interaction, premiumActive) {
     session.queue = [];
     session.current = null;
     session.player.stop(true);
+    stopNowPlayingUpdater(session);
     const connection = getVoiceConnection(guildId);
     if (connection) connection.destroy();
     session.connection = null;
@@ -641,5 +839,6 @@ function flushMusicData() {
 module.exports = {
   handleMusicCommand,
   restore247,
+  forceFixMusic,
   flushMusicData
 };
