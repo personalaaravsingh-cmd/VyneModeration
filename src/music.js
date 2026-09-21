@@ -155,6 +155,31 @@ function cleanTitle(title) {
   return String(title || "Unknown track").replace(/\s+/g, " ").trim().slice(0, 256);
 }
 
+function ytDlpOptions(extra = {}) {
+  return {
+    noWarnings: true,
+    noPlaylist: true,
+    jsRuntimes: "node",
+    remoteComponents: "ejs:github",
+    ...extra
+  };
+}
+
+function ytDlpError(err, fallback = "YouTube could not be read.") {
+  const raw = String(err?.stderr || err?.stdout || err?.message || err || "").trim();
+  if (/python3.*not found|python.*not found|could not find.*python/i.test(raw)) {
+    return "The host is missing Python 3, which youtube-dl-exec currently requires.";
+  }
+  if (/sign in to confirm|not a bot|LOGIN_REQUIRED|http error 429|too many requests/i.test(raw)) {
+    return "YouTube is blocking this server's IP right now. Try again later or configure YouTube cookies/PO-token support.";
+  }
+  if (/no supported javascript runtime|javascript runtime.*not found/i.test(raw)) {
+    return "yt-dlp could not access Node.js for YouTube's JavaScript challenge solver.";
+  }
+  const useful = raw.split("\n").map(x => x.trim()).filter(Boolean).slice(-3).join(" ");
+  return useful || fallback;
+}
+
 async function resolveTrack(query, requester) {
   const input = String(query || "").trim();
   if (!input) throw new Error("Enter a YouTube URL or song name.");
@@ -166,12 +191,10 @@ async function resolveTrack(query, requester) {
     if (isYouTubeUrl(input)) {
       const id = youtubeVideoId(input);
       if (!id) throw new Error("That YouTube URL does not contain a playable video.");
-      info = await youtubedl(input, {
+      info = await youtubedl(input, ytDlpOptions({
         dumpSingleJson: true,
-        noWarnings: true,
-        noPlaylist: true,
         skipDownload: true
-      });
+      }));
     } else {
       const data = await youtubedl(`ytsearch8:${input}`, {
         dumpSingleJson: true,
@@ -183,12 +206,10 @@ async function resolveTrack(query, requester) {
       const result = results.find(v => v?.url && !v.live) || results.find(v => v?.url);
       if (!result?.url) throw new Error("No YouTube results found for that song.");
       url = result.url;
-      info = await youtubedl(url, {
+      info = await youtubedl(url, ytDlpOptions({
         dumpSingleJson: true,
-        noWarnings: true,
-        noPlaylist: true,
         skipDownload: true
-      });
+      }));
     }
   } catch (err) {
     const message = String(err?.stderr || err?.message || err || "");
@@ -300,14 +321,12 @@ async function startCurrent(guildId, track, seekSeconds = 0) {
   if (!session.connection) throw new Error("Vyne is not connected to a voice channel.");
 
   const seek = Math.max(0, Number(seekSeconds) || 0);
-  const subprocess = youtubedl.exec(track.url, {
+  const subprocess = youtubedl.exec(track.url, ytDlpOptions({
     format: "bestaudio[acodec=opus][ext=webm]/bestaudio[acodec=opus]",
     output: "-",
-    noWarnings: true,
-    noPlaylist: true,
     quiet: true,
     ...(seek > 0 ? { downloadSections: `*${seek}-` } : {})
-  });
+  }));
 
   subprocess.stderr?.on("data", chunk => {
     const message = String(chunk || "").trim();
