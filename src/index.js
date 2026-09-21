@@ -4125,6 +4125,7 @@ client.once("clientReady", async readyClient => {
       .catch(err => console.error("VoiceMaster startup recovery error:", err?.message || err));
   }
   console.log(`✦ Vyne is online.`);
+  await restore247(readyClient, premiumActive).catch(err => console.error("Music 24/7 restore error:", err?.message || err));
   console.log(`🤖 AI: ${GEMINI_API_KEY ? `configured (${AI_MODEL})` : "not configured"}`);
   await registerCommands().catch(err => console.error("❌ Command registration failed:", err));
   readyClient.user.setPresence({
