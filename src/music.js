@@ -179,7 +179,7 @@ async function resolveTrack(query, requester, player) {
     if (!lavaTrack) throw new Error("No playable track was found for that query.");
 
     const info = lavaTrack.info || {};
-    const duration = durationSeconds(info.duration || info.durationString);
+    const duration = durationSeconds(info.length ?? info.duration ?? info.durationString);
     if (info.isStream || info.isLive || info.liveStatus === "is_live") {
       throw new Error("Live streams are not supported by Vyne Music.");
     }
@@ -324,7 +324,7 @@ async function autoplayTrack(client, guildId) {
     });
     if (!candidate) return null;
     const info = candidate.info || {};
-    const duration = durationSeconds(info.duration);
+    const duration = durationSeconds(info.length ?? info.duration);
     return {
       id: info.identifier || info.uri || candidate.encoded,
       url: info.uri || "",
@@ -517,7 +517,8 @@ function currentElapsed(track) {
   if (!track) return 0;
   const session = sessions.get(track.guildId || "");
   const player = session?.player;
-  if (player && Number.isFinite(player.position)) return Math.max(0, Math.floor(player.position / 1000));
+  const position = player?.state?.position ?? player?.position;
+  if (Number.isFinite(position)) return Math.max(0, Math.floor(position / 1000));
   return Math.max(0, Math.floor((Date.now() - (track.startedAt || Date.now())) / 1000) + (track.seek || 0));
 }
 
