@@ -152,6 +152,65 @@ function forgetTempVoice(guildId, channelId) {
   }
 }
 
+async function recoverVoiceMasterSetup(guild) {
+  const cfg = getGuildData(guild.id);
+  const v = cfg.voicemaster;
+  let changed = false;
+
+  let category = v.categoryId ? guild.channels.cache.get(v.categoryId) : null;
+  let hub = v.hubChannelId ? guild.channels.cache.get(v.hubChannelId) : null;
+
+  // If the config file was reset but the default VoiceMaster channels still
+  // exist, recover the setup from Discord instead of making the user configure
+  // it again after a restart/redeploy.
+  if (!category) {
+    category = guild.channels.cache.find(c =>
+      c.type === ChannelType.GuildCategory && c.name === "Vyne Voice"
+    ) || null;
+  }
+
+  if (!hub) {
+    hub = guild.channels.cache.find(c =>
+      c.type === ChannelType.GuildVoice &&
+      c.name === "➕ Join to Create" &&
+      (!category || c.parentId === category.id)
+    ) || null;
+  }
+
+  // If Vyne was enabled and one of its setup channels disappeared, rebuild the
+  // missing pieces automatically so VoiceMaster remains configured.
+  if (v.enabled && !category) {
+    category = await guild.channels.create({
+      name: "Vyne Voice",
+      type: ChannelType.GuildCategory,
+      reason: "Vyne VoiceMaster setup recovery"
+    });
+    changed = true;
+  }
+
+  if (v.enabled && !hub) {
+    hub = await guild.channels.create({
+      name: "➕ Join to Create",
+      type: ChannelType.GuildVoice,
+      parent: category?.id || null,
+      reason: "Vyne VoiceMaster setup recovery"
+    });
+    changed = true;
+  }
+
+  if (category && category.type === ChannelType.GuildCategory && v.categoryId !== category.id) {
+    v.categoryId = category.id;
+    changed = true;
+  }
+  if (hub && hub.type === ChannelType.GuildVoice && v.hubChannelId !== hub.id) {
+    v.hubChannelId = hub.id;
+    changed = true;
+  }
+
+  if (changed) writeJSON(FILES.config, db.config);
+  return v;
+}
+
 async function cleanupVoiceMasterRooms(guild) {
   const cfg = getGuildData(guild.id);
   const rooms = cfg.voicemaster?.rooms;
@@ -2577,18 +2636,88 @@ async function handleModeration(interaction) {
   if (command === "purge") {
     const amount = interaction.options.getInteger("amount");
     const user = interaction.options.getUser("user");
-    const messages = await interaction.channel.messages.fetch({ limit: Math.min(100, amount + 20) });
-    let selected = [...messages.values()].slice(0, amount);
-    if (user) selected = selected.filter(m => m.author.id === user.id);
-    const deletable = selected.filter(m => Date.now() - m.createdTimestamp < 14 * 86400000);
-    if (!deletable.length) return safeReply(interaction, { embeds: [errorEmbed("Nothing to delete", "No eligible messages were found.")], flags: MessageFlags.Ephemeral });
-    await interaction.channel.bulkDelete(deletable, true);
-    return safeReply(interaction, { embeds: [success("Messages purged", `Deleted **${deletable.length}** messages.`)] });
+
+    // Fetch the full 100-message window first, then apply the optional user
+    // filter. The previous implementation sliced before filtering, so
+    // /purge 10 user:@someone could delete fewer than 10 matching messages.
+    const fetched = await interaction.channel.messages.fetch({ limit: 100 });
+    let selected = [...fetched.values()]
+      .filter(m => !user || m.author.id === user.id)
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+      .slice(0, amount);
+
+    if (!selected.length) {
+      return safeReply(interaction, {
+        embeds: [errorEmbed("Nothing to delete", "No matching messages were found.")],
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    // Discord bulk deletion only accepts messages newer than 14 days.
+    // Delete newer messages in bulk and older messages individually so
+    // Vyne's own messages and older eligible messages are not silently left.
+    const cutoff = Date.now() - 14 * 86400000;
+    const recent = selected.filter(m => m.createdTimestamp >= cutoff);
+    const old = selected.filter(m => m.createdTimestamp < cutoff);
+    let deleted = 0;
+
+    if (recent.length) {
+      try {
+        const deletedIds = await interaction.channel.bulkDelete(recent, true);
+        deleted += deletedIds?.length ?? deletedIds?.size ?? 0;
+      } catch (err) {
+        console.error("Purge bulk-delete error:", err?.message || err);
+      }
+    }
+
+    for (const message of old) {
+      try {
+        await message.delete("Vyne purge");
+        deleted++;
+      } catch (err) {
+        console.error("Purge individual-delete error:", err?.message || err);
+      }
+    }
+
+    if (!deleted) {
+      return safeReply(interaction, {
+        embeds: [errorEmbed("Purge failed", "Vyne could not delete the selected messages. Check its Manage Messages permission.")],
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    return safeReply(interaction, {
+      embeds: [success("Messages purged", `Deleted **${deleted}** message${deleted === 1 ? "" : "s"}.`)]
+    });
   }
 
   if (command === "lock" || command === "unlock") {
-    await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: command === "unlock" ? null : false });
-    return safeReply(interaction, { embeds: [success(command === "lock" ? "Channel locked" : "Channel unlocked", `${interaction.channel} has been ${command === "lock" ? "locked" : "unlocked"}.`)] });
+    const everyone = interaction.guild.roles.everyone;
+    const overwrite = interaction.channel.permissionOverwrites.cache.get(everyone.id);
+    const isLocked = Boolean(overwrite?.deny?.has(PermissionFlagsBits.SendMessages));
+
+    if (command === "lock") {
+      if (isLocked) {
+        return safeReply(interaction, {
+          embeds: [infoEmbed("Channel already locked", `${interaction.channel} is already locked.`)]
+        });
+      }
+      await interaction.channel.permissionOverwrites.edit(everyone, { SendMessages: false }, { reason: "Vyne channel lock" });
+      return safeReply(interaction, {
+        embeds: [success("Channel locked", `${interaction.channel} is now locked.`)]
+      });
+    }
+
+    if (!isLocked) {
+      return safeReply(interaction, {
+        embeds: [infoEmbed("Channel already unlocked", `${interaction.channel} is already unlocked.`)]
+      });
+    }
+
+    await interaction.channel.permissionOverwrites.edit(everyone, { SendMessages: null }, { reason: "Vyne channel unlock" });
+    return safeReply(interaction, {
+      embeds: [success("Channel unlocked", `${interaction.channel} is now unlocked.`)]
+    });
   }
 
   if (command === "slowmode") {
@@ -3958,7 +4087,11 @@ client.once("clientReady", async readyClient => {
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
   console.log(`📌 Client ID: ${CLIENT_ID}`);
   console.log(`📌 Guild ID: ${GUILD_ID}`);
-  for (const guild of client.guilds.cache.values()) cleanupVoiceMasterRooms(guild).catch(err => console.error("VoiceMaster startup cleanup error:", err?.message || err));
+  for (const guild of client.guilds.cache.values()) {
+    recoverVoiceMasterSetup(guild)
+      .then(() => cleanupVoiceMasterRooms(guild))
+      .catch(err => console.error("VoiceMaster startup recovery error:", err?.message || err));
+  }
   console.log(`✦ Vyne is online.`);
   console.log(`🤖 AI: ${GEMINI_API_KEY ? `configured (${AI_MODEL})` : "not configured"}`);
   await registerCommands().catch(err => console.error("❌ Command registration failed:", err));
