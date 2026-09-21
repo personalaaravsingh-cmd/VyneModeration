@@ -30,7 +30,8 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const os = require("os");
-const { handleMusicCommand, restore247, forceFixMusic, flushMusicData } = require("./music");
+const { handleMusicCommand, restore247, forceFixMusic, flushMusicData, setupLavalink } = require("./music");
+const { LavalinkManager } = require("lavalink-client");
 
 const {
   DISCORD_TOKEN,
@@ -112,6 +113,52 @@ const client = new Client({
     GatewayIntentBits.GuildModeration
   ],
   partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
+});
+
+client.lavalink = new LavalinkManager({
+  nodes: [{
+    id: process.env.LAVALINK_ID || "TripleN",
+    host: process.env.LAVALINK_HOST || "lavalink.nazha.online",
+    port: Number(process.env.LAVALINK_PORT || 443),
+    authorization: process.env.LAVALINK_PASSWORD,
+    secure: String(process.env.LAVALINK_SECURE || "true").toLowerCase() === "true",
+    retryAmount: 5,
+    retryDelay: 5000
+  }],
+  sendToShard: (guildId, payload) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) guild.shard.send(payload);
+  },
+  autoSkip: false,
+  client: {
+    id: CLIENT_ID,
+    username: "Vyne"
+  },
+  playerOptions: {
+    applyVolumeAsFilter: false,
+    clientBasedPositionUpdateInterval: 250,
+    defaultSearchPlatform: "ytmsearch",
+    volumeDecrementer: 1,
+    onDisconnect: {
+      autoReconnect: true,
+      destroyPlayer: false
+    },
+    onEmptyQueue: {
+      destroyAfterMs: 0
+    },
+    useUnresolvedData: true
+  },
+  queueOptions: {
+    maxPreviousTracks: 25
+  }
+});
+
+client.on("raw", data => {
+  try {
+    client.lavalink.sendRawData(data);
+  } catch (err) {
+    console.error("Lavalink raw event error:", err?.message || err);
+  }
 });
 
 const cooldowns = new Collection();
@@ -4258,6 +4305,16 @@ setInterval(async () => {
 setInterval(() => pollNotificationFeeds().catch(err => console.error("Notification polling error:", err)), 60000);
 
 client.once("clientReady", async readyClient => {
+  setupLavalink(readyClient);
+  if (!process.env.LAVALINK_PASSWORD) {
+    console.warn("⚠️ LAVALINK_PASSWORD is not set; music commands will not connect to TripleN.");
+  }
+  readyClient.lavalink.init({
+    id: readyClient.user.id,
+    username: readyClient.user.username,
+    shards: client.ws.totalShards
+  });
+  console.log(`🎵 Lavalink: TripleN @ ${process.env.LAVALINK_HOST || "lavalink.nazha.online"}:${process.env.LAVALINK_PORT || "443"} (secure)`);
   console.log(`✅ Logged in as ${readyClient.user.tag}`);
   console.log(`📌 Client ID: ${CLIENT_ID}`);
   console.log(`📌 Guild ID: ${GUILD_ID}`);
