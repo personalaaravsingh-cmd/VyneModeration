@@ -1526,7 +1526,7 @@ function helpPayload(page = "home") {
   };
 
   const categories = [
-    ["home", "Overview", "✦", "All Vyne categories"],
+    ["home", "Overview", "✨", "All Vyne categories"],
     ["moderation", "Moderation", "🛡️", "Punishments and server management"],
     ["security", "Security", "🔐", "AutoMod, Anti-Nuke and raid protection"],
     ["tickets", "Tickets", "🎫", "Support ticket system"],
@@ -1535,7 +1535,7 @@ function helpPayload(page = "home") {
     ["analytics", "Analytics", "📊", "Analytics, levels and economy"],
     ["community", "Community", "🎉", "Giveaways, polls and reports"],
     ["ai", "AI", "🤖", "Vyne AI controls"],
-    ["premium", "Premium", "◆", "Premium features and plans"],
+    ["premium", "Premium", "💎", "Premium features and plans"],
     ["noprefix", "No-Prefix", "⚡", "No-Prefix access"],
     ["system", "System", "⚙️", "Owner-only system tools"]
   ];
