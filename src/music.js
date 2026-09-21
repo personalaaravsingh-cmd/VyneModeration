@@ -159,16 +159,24 @@ function ytDlpOptions(extra = {}) {
   return {
     noWarnings: true,
     noPlaylist: true,
-    jsRuntimes: "node",
+    // Use the exact Node executable running Vyne instead of relying on PATH.
+    jsRuntimes: `node:${process.execPath}`,
     remoteComponents: "ejs:github",
     ...extra
   };
 }
 
 function ytDlpError(err, fallback = "YouTube could not be read.") {
-  const raw = String(err?.stderr || err?.stdout || err?.message || err || "").trim();
+  const raw = [
+    err?.stderr,
+    err?.stdout,
+    err?.message,
+    err?.code ? `code=${err.code}` : "",
+    err?.cause?.message ? `cause=${err.cause.message}` : ""
+  ].filter(Boolean).map(String).join("\n").trim();
+
   if (/python3.*not found|python.*not found|could not find.*python/i.test(raw)) {
-    return "The host is missing Python 3, which youtube-dl-exec currently requires.";
+    return "The host is missing Python 3, which youtube-dl-exec currently requires during installation.";
   }
   if (/sign in to confirm|not a bot|LOGIN_REQUIRED|http error 429|too many requests/i.test(raw)) {
     return "YouTube is blocking this server's IP right now. Try again later or configure YouTube cookies/PO-token support.";
@@ -176,7 +184,17 @@ function ytDlpError(err, fallback = "YouTube could not be read.") {
   if (/no supported javascript runtime|javascript runtime.*not found/i.test(raw)) {
     return "yt-dlp could not access Node.js for YouTube's JavaScript challenge solver.";
   }
-  const useful = raw.split("\n").map(x => x.trim()).filter(Boolean).slice(-3).join(" ");
+  if (/remote component.*(ejs|github)|unable to download.*ejs|ejs.*not found/i.test(raw)) {
+    return "yt-dlp could not load the YouTube EJS challenge scripts from GitHub.";
+  }
+
+  const useful = raw.split("\n")
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter(x => !/^warning:/i.test(x))
+    .slice(-4)
+    .join(" ");
+
   return useful || fallback;
 }
 
@@ -196,12 +214,11 @@ async function resolveTrack(query, requester) {
         skipDownload: true
       }));
     } else {
-      const data = await youtubedl(`ytsearch8:${input}`, {
+      const data = await youtubedl(`ytsearch8:${input}`, ytDlpOptions({
         dumpSingleJson: true,
-        noWarnings: true,
         flatPlaylist: true,
         extractFlat: true
-      });
+      }));
       const results = Array.isArray(data?.entries) ? data.entries : [];
       const result = results.find(v => v?.url && !v.live) || results.find(v => v?.url);
       if (!result?.url) throw new Error("No YouTube results found for that song.");
@@ -212,11 +229,14 @@ async function resolveTrack(query, requester) {
       }));
     }
   } catch (err) {
-    const message = String(err?.stderr || err?.message || err || "");
-    if (/sign in to confirm|not a bot|LOGIN_REQUIRED/i.test(message)) {
-      throw new Error("YouTube is blocking this server's IP. Try again later or configure YouTube cookies/PO-token support on the host.");
-    }
-    throw new Error(message.split("\n").filter(Boolean).slice(-1)[0] || "YouTube could not be read.");
+    const diagnostic = ytDlpError(err);
+    console.error("[Music] YouTube resolve error:", {
+      message: err?.message || String(err),
+      code: err?.code || null,
+      stderr: String(err?.stderr || "").slice(-4000),
+      stdout: String(err?.stdout || "").slice(-1000)
+    });
+    throw new Error(diagnostic);
   }
 
   const duration = durationSeconds(info?.duration || info?.duration_string);
@@ -368,14 +388,20 @@ async function autoplayTrack(guildId) {
   const query = `${current.title} ${current.channel}`;
   let data;
   try {
-    data = await youtubedl(`ytsearch10:${query}`, {
+    data = await youtubedl(`ytsearch10:${query}`, ytDlpOptions({
       dumpSingleJson: true,
-      noWarnings: true,
       flatPlaylist: true,
       extractFlat: true
-    });
+    }));
   } catch (err) {
-    throw new Error(String(err?.stderr || err?.message || err || "Autoplay search failed.").split("\n").filter(Boolean).slice(-1)[0]);
+    const diagnostic = ytDlpError(err, "Autoplay search failed.");
+    console.error(`[Music:${guildId}] autoplay search error:`, {
+      message: err?.message || String(err),
+      code: err?.code || null,
+      stderr: String(err?.stderr || "").slice(-4000),
+      stdout: String(err?.stdout || "").slice(-1000)
+    });
+    throw new Error(diagnostic);
   }
 
   const results = Array.isArray(data?.entries) ? data.entries : [];
